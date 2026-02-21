@@ -1,0 +1,45 @@
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Backend
+backend/.env
+backend/insider.db
+backend/*.db
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.turbo
+*.tsbuildinfo
+
+# Frontend env (may contain API URL overrides)
+frontend/.env.local
+frontend/.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and misc
+*.log
+.env
+.env.local
