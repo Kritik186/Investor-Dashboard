@@ -202,9 +202,11 @@ Main Project/
 
 ---
 
-## 8. Auto-update
+## 8. Default companies and auto-update
 
-The dashboard automatically refreshes Form 4 data for **10 companies every week**. A weekly job runs sync for that set of companies so their insider data stays current. Users can also refresh any ticker manually at any time.
+**Default companies:** Six companies are always available on the dashboard: **Amazon** (AMZN), **Roblox** (RBLX), **Carvana** (CVNA), **Meta** (META), **Coupang** (CPNG), and **ServiceTitan** (TTAN). The user chooses one to view its analyses and charts; they can also search for any other ticker.
+
+**Auto-update:** The dashboard automatically refreshes Form 4 data for these six companies **every Sunday** (weekly job at 00:00 UTC). Their insider data stays current without manual refresh. Users can still refresh any ticker manually at any time.
 
 ---
 

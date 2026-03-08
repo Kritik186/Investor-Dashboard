@@ -1,7 +1,8 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export type ResolveResult = { cik10: string; name: string };
-export type TopInsider = { insider_cik: string; insider_name: string; total_abs_value_usd: number };
+export type DefaultCompany = { ticker: string; label: string };
+export type TopInsider = { insider_cik: string; insider_name: string; shares_held_recent: number };
 export type Holding = { insider_cik: string; insider_name: string; date: string; shares_owned_following: number };
 export type Aggregate = {
   insider_cik: string;
@@ -39,6 +40,8 @@ export type Kpis = {
   lookback_days: number;
   total_value_sold_usd: number;
   total_value_bought_usd: number;
+  total_shares_sold: number;
+  total_shares_bought: number;
   net_shares: number;
   filings_count: number;
   last_refresh: string | null;
@@ -51,6 +54,12 @@ export type InsiderActivityPoint = {
   value_bought_usd: number | null;
   value_sold_usd: number | null;
 };
+
+export async function fetchDefaultCompanies(): Promise<{ companies: DefaultCompany[] }> {
+  const res = await fetch(`${API_URL}/api/default-companies`);
+  if (!res.ok) throw new Error("Failed to fetch default companies");
+  return res.json();
+}
 
 export async function resolveTicker(ticker: string): Promise<ResolveResult> {
   const res = await fetch(`${API_URL}/api/resolve?ticker=${encodeURIComponent(ticker)}`);

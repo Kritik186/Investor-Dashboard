@@ -8,41 +8,40 @@ import pandas as pd
 
 def top_15_insiders(
     transactions: list[dict],
-    lookback_days: int = 365,
+    lookback_days: Optional[int] = 365,
 ) -> list[dict]:
     """
-    Top 15 insiders by total ABS(value_usd) over lookback. If value_usd missing, use ABS(shares).
+    Top 15 insiders by shares held on the most recent date.
+    When lookback_days is None, use all transactions (top 15 independent of date range).
+    Otherwise filter to transactions within lookback, then rank by latest shares in that window.
     """
     if not transactions:
         return []
     cutoff = (date.today() - timedelta(days=lookback_days)) if lookback_days else None
     rows = []
     for t in transactions:
-        td = t.get("transaction_date")
-        if isinstance(td, str):
-            try:
-                td = datetime.strptime(td[:10], "%Y-%m-%d").date()
-            except Exception:
-                continue
-        if cutoff and (not td or td < cutoff):
+        td = _parse_d(t.get("transaction_date"))
+        if not td:
             continue
-        val = t.get("value_usd")
-        if val is None:
-            sh = t.get("shares")
-            val = abs(sh) if sh is not None else 0
-        else:
-            val = abs(float(val))
+        if cutoff and td < cutoff:
+            continue
+        sh = t.get("shares_owned_following")
+        if sh is None:
+            continue
         rows.append({
             "insider_cik": t.get("insider_cik"),
             "insider_name": t.get("insider_name"),
-            "total_abs_value_usd": val,
+            "transaction_date": td,
+            "shares_owned_following": float(sh),
         })
     if not rows:
         return []
     df = pd.DataFrame(rows)
-    agg = df.groupby(["insider_cik", "insider_name"], dropna=False).agg(total_abs_value_usd=("total_abs_value_usd", "sum")).reset_index()
-    agg = agg.sort_values("total_abs_value_usd", ascending=False).head(15)
-    return agg.to_dict("records")
+    idx = df.groupby(["insider_cik", "insider_name"])["transaction_date"].idxmax()
+    latest = df.loc[idx].copy()
+    latest = latest.rename(columns={"shares_owned_following": "shares_held_recent"})
+    latest = latest.sort_values("shares_held_recent", ascending=False).head(15)
+    return latest[["insider_cik", "insider_name", "shares_held_recent"]].to_dict("records")
 
 
 def holdings_over_time(
