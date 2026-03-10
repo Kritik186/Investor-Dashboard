@@ -1,6 +1,6 @@
-# Deployment Guide: Insider Trading Dashboard on Render
+# Deployment Guide: Insider Dashboard on Render
 
-This document describes how to deploy the Insider Trading Dashboard to **Render.com** so it runs on a public website, including database setup and SEC API configuration.
+This document describes how to deploy the Insider Dashboard to **Render.com** so it runs on a public website, including database setup and SEC API configuration.
 
 ---
 

@@ -38,7 +38,7 @@ from sqlmodel import SQLModel
 
 SQLModel.metadata.create_all(engine)
 
-app = FastAPI(title="Insider Trading Dashboard API")
+app = FastAPI(title="Insider Dashboard API")
 
 
 def _weekly_sync_default_companies():
@@ -535,4 +535,4 @@ def get_kpis(ticker: str, lookback_days: int = Query(365, alias="lookback_days")
 
 @app.get("/")
 def root():
-    return {"message": "Insider Trading Dashboard API", "docs": "/docs"}
+    return {"message": "Insider Dashboard API", "docs": "/docs"}

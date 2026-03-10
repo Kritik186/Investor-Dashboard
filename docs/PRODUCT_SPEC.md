@@ -1,8 +1,8 @@
-# Insider Trading Dashboard — Product Specification
+# Insider Dashboard — Product Specification
 
 ## 1. Overview
 
-**Product name:** Insider Trading Dashboard (Fancy Insider Trading Dashboard)
+**Product name:** Insider Dashboard
 
 **Purpose:** A web application that lets users view **SEC Form 4** insider trading data for US public companies: resolve stock tickers to companies, sync Form 4 filings from the SEC, and explore top insiders, holdings over time, buy/sell activity, and individual transactions.
 

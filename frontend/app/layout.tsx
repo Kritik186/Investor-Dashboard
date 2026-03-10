@@ -6,7 +6,7 @@ import { Providers } from "@/components/providers";
 const fontClass = "font-sans";
 
 export const metadata: Metadata = {
-  title: "Fancy Insider Trading Dashboard",
+  title: "Insider Dashboard",
   description: "SEC Form 4 insider trading data: top insiders, holdings, activity, transactions",
 };
 

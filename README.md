@@ -1,4 +1,4 @@
-# Fancy Insider Trading Dashboard
+# Insider Dashboard
 
 A web app to view SEC Form 4 insider trading data: resolve tickers, sync filings, and explore top insiders, holdings over time, activity, and transactions.
 

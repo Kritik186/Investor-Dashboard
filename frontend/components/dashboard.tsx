@@ -285,7 +285,7 @@ export function Dashboard() {
         </div>
       )}
       <header className="flex flex-col gap-4 border-b border-border pb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Insider Trading Dashboard</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Insider Dashboard</h1>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium text-muted-foreground">Company:</span>
           <div className="flex flex-wrap gap-2">
