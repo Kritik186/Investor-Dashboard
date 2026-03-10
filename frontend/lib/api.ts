@@ -20,8 +20,11 @@ export type Aggregate = {
   change_shares: number | null;
   pct_sold: number | null;
   pct_sold_label: string | null;
+  period_10b5_1_status?: "all" | "mixed" | "none";
   dispositions?: DispositionLink[];
 };
+
+export type Filter10b5_1 = "all" | "only" | "exclude";
 export type Transaction = {
   id: number | null;
   accession: string;
@@ -127,9 +130,31 @@ export async function fetchInsiderActivity(
   return res.json();
 }
 
-export async function fetchAggregates(ticker: string, lookback_days: number, period: "month" | "quarter"): Promise<{ aggregates: Aggregate[] }> {
-  const res = await fetch(`${API_URL}/api/${encodeURIComponent(ticker)}/aggregates?lookback_days=${lookback_days}&period=${period}`);
+export async function fetchAggregates(
+  ticker: string,
+  lookback_days: number,
+  period: "month" | "quarter",
+  filter_10b5_1: Filter10b5_1 = "all"
+): Promise<{ aggregates: Aggregate[]; filter_10b5_1: string }> {
+  const params = new URLSearchParams({
+    lookback_days: String(lookback_days),
+    period,
+    filter_10b5_1,
+  });
+  const res = await fetch(`${API_URL}/api/${encodeURIComponent(ticker)}/aggregates?${params}`);
   if (!res.ok) throw new Error("Failed to fetch aggregates");
+  return res.json();
+}
+
+export async function backfill10b5_1(max_filings: number = 200): Promise<{
+  updated: number;
+  errors: number;
+  accessions_processed: number;
+}> {
+  const res = await fetch(`${API_URL}/api/backfill-10b5-1?max_filings=${max_filings}`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Backfill failed");
   return res.json();
 }
 

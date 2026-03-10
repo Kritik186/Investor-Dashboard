@@ -27,6 +27,7 @@ class Filing(SQLModel, table=True):
     filing_date: date
     xml_url: Optional[str] = None
     is_amendment: bool = False
+    is_10b5_1: Optional[bool] = None  # Form-level: Rule 10b5-1(c) plan for this filing (one value per form)
 
 
 class Transaction(SQLModel, table=True):
@@ -47,4 +48,5 @@ class Transaction(SQLModel, table=True):
     price: Optional[float] = None
     value_usd: Optional[float] = None
     shares_owned_following: Optional[float] = None
+    is_10b5_1: Optional[bool] = None  # Denormalized from Filing (form-level); same for all txns in one form
     xml_url: Optional[str] = None

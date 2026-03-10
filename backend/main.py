@@ -16,6 +16,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlmodel import Session, create_engine, select
 
 from config import DEFAULT_COMPANY_LABELS, DEFAULT_TICKERS
@@ -55,8 +56,19 @@ def _weekly_sync_default_companies():
 
 @app.on_event("startup")
 def ensure_tables():
-    """Create all tables on startup if they do not exist (idempotent)."""
+    """Create all tables on startup if they do not exist (idempotent). Add is_10b5_1 if missing."""
     SQLModel.metadata.create_all(engine)
+    with engine.connect() as conn:
+        for table, col in [("transactions", "is_10b5_1"), ("filings", "is_10b5_1")]:
+            try:
+                if "sqlite" in str(engine.url):
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} BOOLEAN"))
+                else:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} BOOLEAN"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                pass
     scheduler = BackgroundScheduler()
     # Every Sunday at 00:00 UTC
     scheduler.add_job(_weekly_sync_default_companies, CronTrigger(day_of_week="sun", hour=0, minute=0))
@@ -97,6 +109,7 @@ def _txn_to_dict(t: Transaction) -> dict:
         "price": t.price,
         "value_usd": t.value_usd,
         "shares_owned_following": t.shares_owned_following,
+        "is_10b5_1": getattr(t, "is_10b5_1", None),
         "xml_url": t.xml_url,
     }
 
@@ -156,7 +169,8 @@ def _do_sync(ticker: str, lookback_days: int = 365, max_forms: int = 500) -> dic
                 session.add(Filing(accession=acc_no_dashes, company_cik=cik10, filing_date=fd, xml_url=None, is_amendment=False))
                 session.commit()
                 continue
-            session.add(Filing(accession=acc_no_dashes, company_cik=cik10, filing_date=fd, xml_url=xml_url, is_amendment=False))
+            form_10b5_1 = txns[0].get("is_10b5_1") if txns else None
+            session.add(Filing(accession=acc_no_dashes, company_cik=cik10, filing_date=fd, xml_url=xml_url, is_amendment=False, is_10b5_1=form_10b5_1))
             for t in txns:
                 insider_cik = t.get("insider_cik") or ""
                 insider_name = t.get("insider_name") or ""
@@ -188,6 +202,7 @@ def _do_sync(ticker: str, lookback_days: int = 365, max_forms: int = 500) -> dic
                         price=t.get("price"),
                         value_usd=t.get("value_usd"),
                         shares_owned_following=t.get("shares_owned_following"),
+                        is_10b5_1=t.get("is_10b5_1"),
                         xml_url=t.get("xml_url"),
                     )
                 )
@@ -215,6 +230,58 @@ def sync(body: SyncBody):
         return _do_sync(body.ticker, body.lookback_days, body.max_forms or 500)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/backfill-10b5-1")
+def backfill_10b5_1(max_filings: int = Query(200, ge=1, le=2000, alias="max_filings")):
+    """
+    One-time backfill: for existing transactions with is_10b5_1 IS NULL, re-fetch Form 4 XML
+    from the SEC and set is_10b5_1 from the filing. Processes up to max_filings accessions.
+    """
+    updated = 0
+    errors = 0
+    with Session(engine) as session:
+        rows = list(session.exec(
+            select(Transaction.accession, Transaction.company_cik).where(Transaction.is_10b5_1.is_(None)).distinct()
+        ))
+        seen = set()
+        accessions_to_process = []
+        for acc, cik in rows:
+            if (acc, cik) in seen:
+                continue
+            seen.add((acc, cik))
+            accessions_to_process.append((acc, cik))
+        accessions_to_process = accessions_to_process[:max_filings]
+    for accession, company_cik in accessions_to_process:
+        try:
+            cik_int = str(int(company_cik))
+            base_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/"
+            _, parsed_list = fetch_and_parse_form4(cik_int, accession, company_cik, base_url)
+            if not parsed_list:
+                continue
+            form_is_10b5_1 = parsed_list[0].get("is_10b5_1")
+            with Session(engine) as session:
+                filing = session.get(Filing, accession)
+                if filing is not None:
+                    filing.is_10b5_1 = form_is_10b5_1
+                    session.add(filing)
+                db_txns = list(
+                    session.exec(
+                        select(Transaction).where(
+                            Transaction.accession == accession,
+                            Transaction.company_cik == company_cik,
+                        )
+                    )
+                )
+                for t in db_txns:
+                    if form_is_10b5_1 is not None:
+                        t.is_10b5_1 = form_is_10b5_1
+                        session.add(t)
+                        updated += 1
+                session.commit()
+        except Exception:
+            errors += 1
+    return {"updated": updated, "errors": errors, "accessions_processed": len(accessions_to_process)}
 
 
 @app.get("/api/{ticker}/top")
@@ -269,10 +336,13 @@ def get_aggregates(
     ticker: str,
     lookback_days: int = Query(365, alias="lookback_days"),
     period: str = Query("month", alias="period"),
+    filter_10b5_1: str = Query("all", alias="filter_10b5_1"),
 ):
-    """Monthly or quarterly aggregates for top 15. Top 15 is independent of lookback."""
+    """Monthly or quarterly aggregates for top 15. filter_10b5_1: all | only | exclude."""
     if period not in ("month", "quarter"):
         raise HTTPException(status_code=400, detail="period must be month or quarter")
+    if filter_10b5_1 not in ("all", "only", "exclude"):
+        raise HTTPException(status_code=400, detail="filter_10b5_1 must be all, only, or exclude")
     ticker = ticker.upper()
     with Session(engine) as session:
         company = session.get(Company, ticker)
@@ -293,6 +363,10 @@ def get_aggregates(
     txns_dict = [_txn_to_dict(t) for t in txns]
     for d in txns_dict:
         d["transaction_date"] = d["transaction_date"][:10] if d.get("transaction_date") else None
+    if filter_10b5_1 == "only":
+        txns_dict = [d for d in txns_dict if d.get("is_10b5_1") is True]
+    elif filter_10b5_1 == "exclude":
+        txns_dict = [d for d in txns_dict if d.get("is_10b5_1") is not True]
     cutoff_str = cutoff.isoformat()
     last_before_cutoff = {}
     for d in txns_all_dict:
@@ -308,7 +382,7 @@ def get_aggregates(
     position_before_cutoff = {cik: val[1] for cik, val in last_before_cutoff.items()}
     top = top_15_insiders(txns_all_dict, lookback_days=None)
     agg = aggregates_monthly_quarterly(txns_dict, top, lookback_days, period, position_before_cutoff)
-    return {"ticker": ticker, "lookback_days": lookback_days, "period": period, "aggregates": agg}
+    return {"ticker": ticker, "lookback_days": lookback_days, "period": period, "filter_10b5_1": filter_10b5_1, "aggregates": agg}
 
 
 @app.get("/api/{ticker}/transactions")

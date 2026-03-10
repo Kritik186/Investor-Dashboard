@@ -112,6 +112,30 @@ def _find_float(txn: ET.Element, *paths: str) -> Optional[float]:
     return _float_val(v) if v is not None else None
 
 
+def _parse_form_level_10b5_1(root: ET.Element) -> Optional[bool]:
+    """
+    Parse Rule 10b5-1(c) at form level (one value per Form 4 filing).
+    Checks nonDerivativeTable (table-level), ownershipDocument, then root.
+    Returns True/False/None.
+    """
+    for el in [
+        root.find(".//nonDerivativeTable"),
+        root.find("ownershipDocument"),
+        root.find("ownershipDocument/nonDerivativeTable"),
+        root,
+    ]:
+        if el is None:
+            continue
+        v = _find_text(el, "aff10b5One/value", "aff10b5One")
+        if v is not None:
+            s = (v or "").strip()
+            if s == "1":
+                return True
+            if s == "0":
+                return False
+    return None
+
+
 def _parse_non_derivative_transactions(root: ET.Element) -> list[dict]:
     """
     Parse nonDerivativeTable/nonDerivativeTransaction.
@@ -252,9 +276,10 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
     """
     Parse Form 4 XML and return list of normalized transaction dicts suitable for DB.
     Strips XML namespaces first (as in working reference) so find() matches SEC tags.
+    10b5-1 is form-level (one value per filing); we parse it once and set the same is_10b5_1 on every transaction.
     Each dict has: accession, company_cik, insider_cik, insider_name, is_director, is_officer,
     officer_title, security_title, transaction_date, transaction_code, acq_disp, shares, price,
-    value_usd, shares_owned_following, xml_url.
+    value_usd, shares_owned_following, is_10b5_1 (form-level), xml_url.
     """
     root = ET.fromstring(xml_text)
     # Strip namespaces so find() works on SEC Form 4 XML (same as working reference)
@@ -264,6 +289,8 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
     txns = _parse_non_derivative_transactions(root)
     if not ownerships:
         ownerships = [{"insider_name": "", "insider_cik": "", "is_director": False, "is_officer": False, "officer_title": None, "security_title": None}]
+    # 10b5-1 is form-level: one value per filing (not per transaction)
+    form_is_10b5_1 = _parse_form_level_10b5_1(root)
     # One ownership per form typically; if multiple, replicate txns per owner (simplified: use first)
     meta = ownerships[0]
     result = []
@@ -284,6 +311,7 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
             "price": t.get("price"),
             "value_usd": t.get("value_usd"),
             "shares_owned_following": t.get("shares_owned_following"),
+            "is_10b5_1": form_is_10b5_1,
             "xml_url": xml_url,
         })
     return result

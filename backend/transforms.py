@@ -194,6 +194,7 @@ def aggregates_monthly_quarterly(
             acq = (t.get("acq_disp") or "").upper()
             following = t.get("shares_owned_following")
             t_id = t.get("id")
+            is_10b5 = t.get("is_10b5_1")
             rows.append({
                 "insider_cik": t["insider_cik"],
                 "insider_name": t.get("insider_name"),
@@ -203,6 +204,7 @@ def aggregates_monthly_quarterly(
                 "value_usd": float(value) if value is not None else None,
                 "acq_disp": acq,
                 "shares_owned_following": float(following) if following is not None else None,
+                "is_10b5_1": is_10b5 is True,
                 "xml_url": t.get("xml_url"),
             })
         if not rows:
@@ -297,10 +299,13 @@ def aggregates_monthly_quarterly(
                     except Exception:
                         pe_str = str(period_end)[:10]
                 ps_str = period_start_date.isoformat()[:10] if period_start_date and hasattr(period_start_date, "isoformat") else ""
-                # One link per unique filing (xml_url); same filing can have multiple transactions
+                n_10b5 = int((pg["is_10b5_1"] == True).sum()) if "is_10b5_1" in pg.columns else 0
+                n_total = len(pg)
+                period_10b5_1_status = "all" if n_total and n_10b5 == n_total else ("mixed" if n_10b5 else "none")
+                # One link per unique filing (xml_url); include both acquisitions and dispositions
                 seen_urls = set()
                 dispositions = []
-                for _, row in pg.loc[sold_mask].iterrows():
+                for _, row in pg.sort_values("transaction_date").iterrows():
                     url = row.get("xml_url")
                     if url and url in seen_urls:
                         continue
@@ -327,6 +332,7 @@ def aggregates_monthly_quarterly(
                     "change_shares": float(change_shares) if change_shares is not None else None,
                     "pct_sold": pct_sold,
                     "pct_sold_label": pct_sold_label,
+                    "period_10b5_1_status": period_10b5_1_status,
                     "dispositions": dispositions,
                 })
         return results

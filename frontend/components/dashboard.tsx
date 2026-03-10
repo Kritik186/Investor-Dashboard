@@ -17,6 +17,7 @@ import {
   fetchAggregates,
   fetchTransactions,
   fetchDefaultCompanies,
+  backfill10b5_1,
   type Kpis,
   type Transaction,
   type DefaultCompany,
@@ -91,9 +92,11 @@ export function Dashboard() {
   const [isCustomMode, setIsCustomMode] = useState(false);
   const [customInputStr, setCustomInputStr] = useState("30"); // string so user can type/clear freely
   const [period, setPeriod] = useState<"month" | "quarter">("month");
+  const [filter10b5_1, setFilter10b5_1] = useState<"all" | "only" | "exclude">("all");
   const [toastOpen, setToastOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ title: string; description?: string; variant?: "success" | "error" }>({ title: "" });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isBackfilling, setIsBackfilling] = useState(false);
   const queryClient = useQueryClient();
   const customDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -191,8 +194,8 @@ export function Dashboard() {
   });
 
   const { data: aggregatesData } = useQuery({
-    queryKey: ["aggregates", ticker, lookbackDays, period],
-    queryFn: () => fetchAggregates(ticker!, lookbackDays, period),
+    queryKey: ["aggregates", ticker, lookbackDays, period, filter10b5_1],
+    queryFn: () => fetchAggregates(ticker!, lookbackDays, period, filter10b5_1),
     enabled: !!ticker,
   });
 
@@ -333,9 +336,41 @@ export function Dashboard() {
               Quarter
             </button>
           </div>
+          <Select
+            value={filter10b5_1}
+            onChange={(e) => setFilter10b5_1(e.target.value as "all" | "only" | "exclude")}
+            className="w-[180px]"
+          >
+            <option value="all">All transactions</option>
+            <option value="only">10b5-1 only</option>
+            <option value="exclude">Non-10b5-1</option>
+          </Select>
           <Button onClick={handleRefresh} disabled={!ticker || isRefreshing} variant="outline" size="sm">
             <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
             {isRefreshing ? "Fetching data…" : "Refresh"}
+          </Button>
+          <Button
+            onClick={async () => {
+              setIsBackfilling(true);
+              try {
+                const res = await backfill10b5_1(200);
+                showToast(
+                  "10b5-1 backfill complete",
+                  `Updated ${res.updated} transactions across ${res.accessions_processed} filings.${res.errors ? ` ${res.errors} errors.` : ""}`
+                );
+                queryClient.invalidateQueries({ queryKey: ["aggregates"] });
+                queryClient.invalidateQueries({ queryKey: ["transactions"] });
+              } catch (e) {
+                showToast("Backfill failed", (e as Error).message);
+              } finally {
+                setIsBackfilling(false);
+              }
+            }}
+            disabled={isBackfilling}
+            variant="outline"
+            size="sm"
+          >
+            {isBackfilling ? "Backfilling…" : "Backfill 10b5-1"}
           </Button>
           {isRefreshing && (
             <span className="text-sm text-muted-foreground">Fetching data from SEC…</span>
@@ -385,7 +420,12 @@ export function Dashboard() {
               />
             </TabsContent>
             <TabsContent value="pct-sold" className="space-y-4">
-              <PctSoldTab aggregates={aggregatesData?.aggregates ?? []} period={period} topInsiders={topData?.top_insiders ?? []} />
+              <PctSoldTab
+                aggregates={aggregatesData?.aggregates ?? []}
+                period={period}
+                topInsiders={topData?.top_insiders ?? []}
+                filter10b5_1={filter10b5_1}
+              />
             </TabsContent>
             <TabsContent value="transactions" className="space-y-4">
               <TransactionsTable ticker={ticker} lookbackDays={lookbackDays} initialData={transactionsData?.transactions ?? []} />

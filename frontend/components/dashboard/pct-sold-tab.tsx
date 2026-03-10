@@ -18,10 +18,12 @@ export function PctSoldTab({
   aggregates,
   period,
   topInsiders = [],
+  filter10b5_1 = "all",
 }: {
   aggregates: Aggregate[];
   period: "month" | "quarter";
   topInsiders?: TopInsider[];
+  filter10b5_1?: "all" | "only" | "exclude";
 }) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "shares_held_recent", desc: true }]);
   const [expandedInsiderCik, setExpandedInsiderCik] = useState<string | null>(null);
@@ -201,6 +203,14 @@ export function PctSoldTab({
     getSortedRowModel: getSortedRowModel(),
   });
 
+  if (aggregates.length === 0) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-8 text-center">
+        <p className="text-muted-foreground">No shareholding change data for this range.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-lg border border-border bg-card p-4">
@@ -336,6 +346,7 @@ export function PctSoldTab({
                                   <th className="px-4 py-2 text-right font-medium">End shares</th>
                                   <th className="px-4 py-2 text-right font-medium">Change</th>
                                   <th className="px-4 py-2 text-right font-medium">Value change (USD)</th>
+                                  <th className="px-4 py-2 text-center font-medium" title="Rule 10b5-1(c): All = all under plan; Mixed = some; None = none">10b5-1</th>
                                   <th className="px-4 py-2 text-left font-medium">Filings</th>
                                 </tr>
                               </thead>
@@ -367,6 +378,17 @@ export function PctSoldTab({
                                           </span>
                                         );
                                       })()}
+                                    </td>
+                                    <td className="px-4 py-2 text-center" title={a.period_10b5_1_status === "all" ? "All transactions in this period under Rule 10b5-1(c) plan" : a.period_10b5_1_status === "mixed" ? "Some transactions under 10b5-1 plan" : "No 10b5-1 transactions in this period"}>
+                                      {a.period_10b5_1_status === "all" ? (
+                                        <span className="rounded bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">All</span>
+                                      ) : a.period_10b5_1_status === "mixed" ? (
+                                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Mixed</span>
+                                      ) : a.period_10b5_1_status === "none" ? (
+                                        <span className="text-muted-foreground text-xs">None</span>
+                                      ) : (
+                                        "—"
+                                      )}
                                     </td>
                                     <td className="px-4 py-2">
                                       {a.dispositions && a.dispositions.length > 0 ? (
