@@ -181,7 +181,7 @@ Do **not** add a trailing slash. Use **https** so the browser can call the API f
 
 ## 7. Optional: Backfill and defaults
 
-- **10b5-1 backfill**: After the first syncs, you can run the backfill from the UI (**Backfill 10b5-1** button) or by calling `POST https://<your-backend>.onrender.com/api/backfill-10b5-1?max_filings=200` once. This fills `is_10b5_1` for existing transactions.
+- **10b5-1 backfill** (optional): New syncs set `is_10b5_1` at form level automatically. For existing data you can call `POST https://<your-backend>.onrender.com/api/backfill-10b5-1?max_filings=200` once if needed.
 - **Default companies**: The app uses a default list of tickers; you can change `DEFAULT_TICKERS` / `DEFAULT_COMPANY_LABELS` in the backend config and redeploy if you want different defaults.
 
 ---

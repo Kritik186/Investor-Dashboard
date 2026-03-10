@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toast, ToastViewport } from "@/components/ui/toast";
-import { Search, RefreshCw, TrendingUp, Percent, Table2 } from "lucide-react";
+import { Search, RefreshCw, TrendingUp, Percent, Table2, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,7 +17,7 @@ import {
   fetchAggregates,
   fetchTransactions,
   fetchDefaultCompanies,
-  backfill10b5_1,
+  deleteCompany,
   type Kpis,
   type Transaction,
   type DefaultCompany,
@@ -40,6 +40,7 @@ const LOOKBACK_MAX = 3650; // ~10 years
 const isPreset = (days: number) => LOOKBACK_PRESETS.some((p) => p.value === days);
 
 const CUSTOM_COMPANIES_KEY = "insider-dashboard-custom-companies";
+const REMOVED_COMPANIES_KEY = "insider-dashboard-removed-tickers";
 
 function loadCustomCompanies(): DefaultCompany[] {
   if (typeof window === "undefined") return [];
@@ -56,6 +57,26 @@ function loadCustomCompanies(): DefaultCompany[] {
 function saveCustomCompanies(list: DefaultCompany[]) {
   try {
     localStorage.setItem(CUSTOM_COMPANIES_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadRemovedTickers(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = localStorage.getItem(REMOVED_COMPANIES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as string[];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveRemovedTickers(set: Set<string>) {
+  try {
+    localStorage.setItem(REMOVED_COMPANIES_KEY, JSON.stringify(Array.from(set)));
   } catch {
     /* ignore */
   }
@@ -78,11 +99,14 @@ export function Dashboard() {
   });
   const defaultCompanies = defaultCompaniesData?.companies ?? DEFAULT_COMPANIES_FALLBACK;
   const [customCompanies, setCustomCompanies] = useState<DefaultCompany[]>([]);
-  // Load custom companies after mount to avoid hydration mismatch (server has no localStorage)
+  const [removedTickers, setRemovedTickers] = useState<Set<string>>(new Set());
+  // Load custom and removed lists after mount to avoid hydration mismatch
   useEffect(() => {
     setCustomCompanies(loadCustomCompanies());
+    setRemovedTickers(loadRemovedTickers());
   }, []);
-  const allCompanies = [...defaultCompanies, ...customCompanies];
+  const visibleDefaults = defaultCompanies.filter((c) => !removedTickers.has(c.ticker));
+  const allCompanies = [...visibleDefaults, ...customCompanies];
   const defaultTicker = allCompanies[0]?.ticker ?? "AMZN";
 
   const [tickerInput, setTickerInput] = useState("");
@@ -95,8 +119,9 @@ export function Dashboard() {
   const [filter10b5_1, setFilter10b5_1] = useState<"all" | "only" | "exclude">("all");
   const [toastOpen, setToastOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ title: string; description?: string; variant?: "success" | "error" }>({ title: "" });
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isBackfilling, setIsBackfilling] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<string>("");
+  const [deletingTicker, setDeletingTicker] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const customDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -126,22 +151,31 @@ export function Dashboard() {
     queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
   }, [lookbackDays, ticker, queryClient]);
 
-  // Auto-sync when company changes so data flows without clicking Refresh
+  // Auto-sync when company changes so data flows without clicking Refresh; show progress
   useEffect(() => {
     if (!ticker) return;
     let cancelled = false;
+    setIsSyncing(true);
+    setSyncProgress("Resolving company & fetching filings…");
     syncTicker(ticker, lookbackDays)
       .then((res) => {
         if (!cancelled) {
+          setSyncProgress("Storing data…");
           queryClient.invalidateQueries({ queryKey: ["kpis", ticker] });
           queryClient.invalidateQueries({ queryKey: ["top", ticker] });
           queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
           queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
         }
       })
-      .catch(() => { /* ignore; user can click Refresh */ });
+      .catch(() => { /* ignore; user can click Refresh */ })
+      .finally(() => {
+        if (!cancelled) {
+          setIsSyncing(false);
+          setSyncProgress("");
+        }
+      });
     return () => { cancelled = true; };
-  }, [ticker]);
+  }, [ticker, queryClient]);
 
   const showToast = useCallback((title: string, description?: string) => {
     setToastMessage({ title, description });
@@ -166,7 +200,8 @@ export function Dashboard() {
 
   const handleRefresh = useCallback(async () => {
     if (!ticker) return;
-    setIsRefreshing(true);
+    setIsSyncing(true);
+    setSyncProgress("Fetching data from SEC…");
     try {
       const res = await syncTicker(ticker, lookbackDays);
       showToast("Data fetching complete", `${res.transactions_created} new transactions stored. Data will update below.`);
@@ -177,9 +212,42 @@ export function Dashboard() {
     } catch (e) {
       showToast("Refresh failed", (e as Error).message);
     } finally {
-      setIsRefreshing(false);
+      setIsSyncing(false);
+      setSyncProgress("");
     }
   }, [ticker, lookbackDays, showToast, queryClient]);
+
+  const handleDeleteCompany = useCallback(
+    async (c: DefaultCompany) => {
+      if (!window.confirm(`Remove ${c.label} (${c.ticker}) from the dashboard and delete its data from the server?`)) return;
+      setDeletingTicker(c.ticker);
+      try {
+        await deleteCompany(c.ticker);
+        const isCustom = customCompanies.some((x) => x.ticker === c.ticker);
+        if (isCustom) {
+          const next = customCompanies.filter((x) => x.ticker !== c.ticker);
+          setCustomCompanies(next);
+          saveCustomCompanies(next);
+        } else {
+          const next = new Set(removedTickers);
+          next.add(c.ticker);
+          setRemovedTickers(next);
+          saveRemovedTickers(next);
+        }
+        if (ticker === c.ticker) {
+          const remaining = allCompanies.filter((x) => x.ticker !== c.ticker);
+          setTicker(remaining[0]?.ticker ?? null);
+          setTickerInput("");
+        }
+        showToast("Company removed", `${c.label} has been removed and its data deleted.`);
+      } catch (e) {
+        showToast("Delete failed", (e as Error).message);
+      } finally {
+        setDeletingTicker(null);
+      }
+    },
+    [customCompanies, removedTickers, ticker, allCompanies, showToast]
+  );
 
   const { data: kpis, isLoading: kpisLoading } = useQuery({
     queryKey: ["kpis", ticker, lookbackDays],
@@ -206,26 +274,64 @@ export function Dashboard() {
   });
 
   return (
-    <div className="container mx-auto max-w-7xl space-y-6 p-6">
+    <div className="container relative mx-auto max-w-7xl space-y-6 p-6">
+      {isSyncing && (
+        <div className="absolute inset-0 z-50 flex items-start justify-center bg-background/80 pt-24 backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-card px-6 py-4 shadow-lg">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm font-medium">Syncing data for {ticker ?? "company"}</p>
+            <p className="text-xs text-muted-foreground">{syncProgress || "Please wait…"}</p>
+          </div>
+        </div>
+      )}
       <header className="flex flex-col gap-4 border-b border-border pb-6">
         <h1 className="text-2xl font-bold tracking-tight">Insider Trading Dashboard</h1>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium text-muted-foreground">Company:</span>
-          <div className="flex flex-wrap gap-1.5">
-            {allCompanies.map((c) => (
-              <Button
-                key={c.ticker}
-                type="button"
-                variant={ticker === c.ticker ? "default" : "outline"}
-                size="sm"
-                onClick={() => {
-                  setTicker(c.ticker);
-                  setTickerInput("");
-                }}
-              >
-                {c.label}
-              </Button>
-            ))}
+          <div className="flex flex-wrap gap-2">
+            {allCompanies.map((c) => {
+              const isSelected = ticker === c.ticker;
+              const isDeleting = deletingTicker === c.ticker;
+              return (
+                <div
+                  key={c.ticker}
+                  className={`group flex items-center rounded-full border transition-colors ${
+                    isSelected
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-input bg-muted/50 hover:bg-muted hover:border-muted-foreground/20"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 rounded-l-full py-1.5 pl-3 pr-2 text-left text-sm font-medium focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
+                    onClick={() => {
+                      setTicker(c.ticker);
+                      setTickerInput("");
+                    }}
+                  >
+                    <span className="truncate">{c.label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${c.label} from list`}
+                    disabled={isDeleting}
+                    className={`shrink-0 rounded-full p-1 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring rounded-r-full ${
+                      isDeleting ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                    } ${isSelected ? "text-primary-foreground/80 hover:bg-primary-foreground/20" : "text-muted-foreground hover:bg-destructive/15 hover:text-destructive"}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteCompany(c);
+                    }}
+                  >
+                    {isDeleting ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <X className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+              );
+            })}
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-sm text-muted-foreground">Other:</span>
@@ -345,35 +451,12 @@ export function Dashboard() {
             <option value="only">10b5-1 only</option>
             <option value="exclude">Non-10b5-1</option>
           </Select>
-          <Button onClick={handleRefresh} disabled={!ticker || isRefreshing} variant="outline" size="sm">
-            <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-            {isRefreshing ? "Fetching data…" : "Refresh"}
+          <Button onClick={handleRefresh} disabled={!ticker || isSyncing} variant="outline" size="sm">
+            <RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+            {isSyncing ? "Syncing…" : "Refresh"}
           </Button>
-          <Button
-            onClick={async () => {
-              setIsBackfilling(true);
-              try {
-                const res = await backfill10b5_1(200);
-                showToast(
-                  "10b5-1 backfill complete",
-                  `Updated ${res.updated} transactions across ${res.accessions_processed} filings.${res.errors ? ` ${res.errors} errors.` : ""}`
-                );
-                queryClient.invalidateQueries({ queryKey: ["aggregates"] });
-                queryClient.invalidateQueries({ queryKey: ["transactions"] });
-              } catch (e) {
-                showToast("Backfill failed", (e as Error).message);
-              } finally {
-                setIsBackfilling(false);
-              }
-            }}
-            disabled={isBackfilling}
-            variant="outline"
-            size="sm"
-          >
-            {isBackfilling ? "Backfilling…" : "Backfill 10b5-1"}
-          </Button>
-          {isRefreshing && (
-            <span className="text-sm text-muted-foreground">Fetching data from SEC…</span>
+          {isSyncing && syncProgress && (
+            <span className="text-sm text-muted-foreground">{syncProgress}</span>
           )}
         </div>
       </header>

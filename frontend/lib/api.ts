@@ -146,15 +146,12 @@ export async function fetchAggregates(
   return res.json();
 }
 
-export async function backfill10b5_1(max_filings: number = 200): Promise<{
-  updated: number;
-  errors: number;
-  accessions_processed: number;
-}> {
-  const res = await fetch(`${API_URL}/api/backfill-10b5-1?max_filings=${max_filings}`, {
-    method: "POST",
-  });
-  if (!res.ok) throw new Error("Backfill failed");
+export async function deleteCompany(ticker: string): Promise<{ ticker: string; deleted: boolean }> {
+  const res = await fetch(`${API_URL}/api/${encodeURIComponent(ticker)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || "Delete failed");
+  }
   return res.json();
 }
 

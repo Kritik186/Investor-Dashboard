@@ -16,7 +16,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import delete, text
 from sqlmodel import Session, create_engine, select
 
 from config import DEFAULT_COMPANY_LABELS, DEFAULT_TICKERS
@@ -89,6 +89,16 @@ class SyncBody(BaseModel):
     ticker: str
     lookback_days: int = 365
     max_forms: Optional[int] = 100
+
+
+def _accession_to_sec_index_url(company_cik: str, accession_no_dashes: str) -> str:
+    """SEC filing index page (fallback when xml_url is missing). Accession format: 10-2-6 with dashes."""
+    acc = (accession_no_dashes or "").replace("-", "")
+    if len(acc) >= 18:
+        dashed = f"{acc[:10]}-{acc[10:12]}-{acc[12:]}"
+    else:
+        dashed = accession_no_dashes or acc
+    return f"https://www.sec.gov/Archives/edgar/data/{company_cik}/{dashed}/"
 
 
 def _txn_to_dict(t: Transaction) -> dict:
@@ -393,7 +403,8 @@ def get_transactions(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """Paginated transactions; optional filter by insider_cik. Returns empty list if company not synced yet."""
+    """Paginated transactions; optional filter by insider_cik. Returns empty list if company not synced yet.
+    Fills missing transaction xml_url from Filing (same accession) so older rows still show links."""
     ticker = ticker.upper()
     with Session(engine) as session:
         company = session.get(Company, ticker)
@@ -405,9 +416,24 @@ def get_transactions(
             stmt = stmt.where(Transaction.insider_cik == insider_cik)
         stmt = stmt.order_by(Transaction.transaction_date.desc()).offset(offset).limit(limit)
         txns = list(session.exec(stmt))
+        accessions_missing_url = list({t.accession for t in txns if not t.xml_url})
+        filing_url_map = {}
+        for acc in accessions_missing_url:
+            filing = session.get(Filing, acc)
+            if filing and filing.xml_url:
+                filing_url_map[acc] = filing.xml_url
+        def txn_to_dict_with_filing_url(t):
+            d = _txn_to_dict(t)
+            if not d.get("xml_url"):
+                if t.accession in filing_url_map:
+                    d["xml_url"] = filing_url_map[t.accession]
+                else:
+                    d["xml_url"] = _accession_to_sec_index_url(t.company_cik, t.accession)
+            return d
+        transactions_out = [txn_to_dict_with_filing_url(t) for t in txns]
     return {
         "ticker": ticker,
-        "transactions": [_txn_to_dict(t) for t in txns],
+        "transactions": transactions_out,
         "limit": limit,
         "offset": offset,
     }
@@ -445,6 +471,22 @@ def refresh(ticker: str, body: Optional[SyncBody] = None):
     if b.ticker.upper() != ticker.upper():
         b = SyncBody(ticker=ticker, lookback_days=b.lookback_days, max_forms=b.max_forms)
     return sync(b)
+
+
+@app.delete("/api/{ticker}")
+def delete_company(ticker: str):
+    """Delete a company and all its filings and transactions from the database."""
+    ticker = ticker.upper()
+    with Session(engine) as session:
+        company = session.get(Company, ticker)
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+        cik10 = company.cik10
+        session.execute(delete(Transaction).where(Transaction.company_cik == cik10))
+        session.execute(delete(Filing).where(Filing.company_cik == cik10))
+        session.delete(company)
+        session.commit()
+    return {"ticker": ticker, "deleted": True}
 
 
 @app.get("/api/{ticker}/kpis")
