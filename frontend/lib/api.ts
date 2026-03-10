@@ -4,17 +4,23 @@ export type ResolveResult = { cik10: string; name: string };
 export type DefaultCompany = { ticker: string; label: string };
 export type TopInsider = { insider_cik: string; insider_name: string; shares_held_recent: number };
 export type Holding = { insider_cik: string; insider_name: string; date: string; shares_owned_following: number };
+export type DispositionLink = { transaction_date: string; shares: number; xml_url: string | null };
+
 export type Aggregate = {
   insider_cik: string;
   insider_name: string;
+  period_start?: string;
   period_end: string;
   shares_sold: number;
   shares_bought: number;
   value_sold_usd: number | null;
   value_bought_usd: number | null;
   start_shares: number | null;
+  end_shares: number | null;
+  change_shares: number | null;
   pct_sold: number | null;
   pct_sold_label: string | null;
+  dispositions?: DispositionLink[];
 };
 export type Transaction = {
   id: number | null;

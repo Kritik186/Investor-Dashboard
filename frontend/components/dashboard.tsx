@@ -370,7 +370,7 @@ export function Dashboard() {
                 <TrendingUp className="h-4 w-4" /> Holdings
               </TabsTrigger>
               <TabsTrigger value="pct-sold" className="gap-2">
-                <Percent className="h-4 w-4" /> % Sold
+                <Percent className="h-4 w-4" /> Shareholding change
               </TabsTrigger>
               <TabsTrigger value="transactions" className="gap-2">
                 <Table2 className="h-4 w-4" /> Transactions
@@ -385,7 +385,7 @@ export function Dashboard() {
               />
             </TabsContent>
             <TabsContent value="pct-sold" className="space-y-4">
-              <PctSoldTab aggregates={aggregatesData?.aggregates ?? []} period={period} />
+              <PctSoldTab aggregates={aggregatesData?.aggregates ?? []} period={period} topInsiders={topData?.top_insiders ?? []} />
             </TabsContent>
             <TabsContent value="transactions" className="space-y-4">
               <TransactionsTable ticker={ticker} lookbackDays={lookbackDays} initialData={transactionsData?.transactions ?? []} />

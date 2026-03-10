@@ -68,6 +68,13 @@ export function HoldingsChart({
 
   const allPoints = useMemo(() => [...boughtPoints, ...soldPoints], [boughtPoints, soldPoints]);
 
+  const xDomain = useMemo(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - lookbackDays);
+    return [start.getTime(), end.getTime()] as [number, number];
+  }, [lookbackDays]);
+
   return (
     <div className="space-y-6">
       <div className="rounded-lg border border-border bg-card p-4">
@@ -118,7 +125,7 @@ export function HoldingsChart({
               <ResponsiveContainer width="100%" height="100%">
                 <ScatterChart margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="dateNum" type="number" tick={{ fontSize: 11 }} tickFormatter={(ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} domain={["dataMin", "dataMax"]} />
+                  <XAxis dataKey="dateNum" type="number" tick={{ fontSize: 11 }} tickFormatter={(ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })} domain={xDomain} />
                   <YAxis type="number" dataKey="shares" name="Shares" tick={{ fontSize: 11 }} tickFormatter={(v) => formatNumber(v)} />
                   <Tooltip
                     formatter={(value: number) => [formatNumber(value), "Shares"]}

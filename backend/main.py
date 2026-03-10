@@ -281,7 +281,11 @@ def get_aggregates(
         stmt_all = select(Transaction).where(Transaction.company_cik == company.cik10)
         txns_all = list(session.exec(stmt_all))
         cutoff = date.today() - timedelta(days=lookback_days)
-        stmt = select(Transaction).where(Transaction.company_cik == company.cik10, Transaction.transaction_date >= cutoff)
+        stmt = (
+            select(Transaction)
+            .where(Transaction.company_cik == company.cik10, Transaction.transaction_date >= cutoff)
+            .order_by(Transaction.transaction_date.asc(), Transaction.id.asc())
+        )
         txns = list(session.exec(stmt))
     txns_all_dict = [_txn_to_dict(t) for t in txns_all]
     for d in txns_all_dict:
@@ -289,8 +293,21 @@ def get_aggregates(
     txns_dict = [_txn_to_dict(t) for t in txns]
     for d in txns_dict:
         d["transaction_date"] = d["transaction_date"][:10] if d.get("transaction_date") else None
+    cutoff_str = cutoff.isoformat()
+    last_before_cutoff = {}
+    for d in txns_all_dict:
+        td = d.get("transaction_date") or ""
+        if not td or td >= cutoff_str:
+            continue
+        cik = d.get("insider_cik")
+        following = d.get("shares_owned_following")
+        if cik is None or following is None:
+            continue
+        if cik not in last_before_cutoff or td > last_before_cutoff[cik][0]:
+            last_before_cutoff[cik] = (td, float(following))
+    position_before_cutoff = {cik: val[1] for cik, val in last_before_cutoff.items()}
     top = top_15_insiders(txns_all_dict, lookback_days=None)
-    agg = aggregates_monthly_quarterly(txns_dict, top, lookback_days, period)
+    agg = aggregates_monthly_quarterly(txns_dict, top, lookback_days, period, position_before_cutoff)
     return {"ticker": ticker, "lookback_days": lookback_days, "period": period, "aggregates": agg}
 
 

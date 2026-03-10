@@ -2,6 +2,18 @@
 
 A web app to view SEC Form 4 insider trading data: resolve tickers, sync filings, and explore top insiders, holdings over time, activity, and transactions.
 
+## Data source (APIs, not scraping)
+
+All market data comes from **SEC EDGAR over HTTP APIs**—no HTML scraping.
+
+- **`backend/sec_client.py`**: HTTP client with rate limiting and retries.
+  - `get_json(url)` / `get_text(url)`: fetch JSON or text (XML) from SEC.
+  - `resolve_ticker_to_cik(ticker)`: uses `https://www.sec.gov/files/company_tickers.json`.
+  - `get_company_submissions(cik10)`: uses `https://data.sec.gov/submissions/CIK{cik}.json`.
+  - `get_filing_index_json()` / `get_filing_xml()`: fetch filing index and Form 4 XML from `https://www.sec.gov/Archives/edgar/...`.
+- **`backend/parser.py`**: uses `sec_client` to get filing index and XML, then parses Form 4 XML with Python’s `xml.etree.ElementTree`.
+- **`backend/main.py`**: calls `resolve_ticker_to_cik`, `get_company_submissions`, and `fetch_and_parse_form4` (from parser) during sync/refresh.
+
 ## Stack
 
 - **Frontend**: Next.js (App Router), TypeScript, Tailwind, shadcn/ui, Recharts, TanStack Table, TanStack Query

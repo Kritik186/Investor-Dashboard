@@ -49,9 +49,14 @@ export function TransactionsTable({
         id: "xml_url",
         header: "Filing",
         accessorKey: "xml_url",
-        cell: ({ row }) => {
+        cell: ({ row, table }) => {
           const url = row.original.xml_url;
           if (!url) return "—";
+          const rows = table.getRowModel().rows;
+          const idx = rows.findIndex((r) => r.id === row.id);
+          const isFirstForFiling =
+            idx >= 0 && rows.slice(0, idx).every((r) => r.original.xml_url !== url);
+          if (!isFirstForFiling) return "—";
           return (
             <a href={url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
               View XML
