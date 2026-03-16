@@ -277,11 +277,13 @@ def aggregates_monthly_quarterly(
                     n_10b5 = int((pg["is_10b5_1"] == True).sum()) if "is_10b5_1" in pg.columns else 0
                     n_total = len(pg)
                     period_10b5_1_status = "all" if n_total and n_10b5 == n_total else ("mixed" if n_10b5 else "none")
+                    # All distinct 10b5-1 plan adoption dates in this period (multiple filings can have different dates)
                     plan_adoption_date_val = None
                     if "plan_adoption_date" in pg.columns:
-                        non_null = pg["plan_adoption_date"].dropna()
-                        if len(non_null):
-                            plan_adoption_date_val = str(non_null.iloc[0])
+                        non_null = pg["plan_adoption_date"].dropna().astype(str).str.strip()
+                        unique_dates = sorted(non_null[non_null != ""].unique())
+                        if unique_dates:
+                            plan_adoption_date_val = ", ".join(unique_dates)
                     is_margin_call_collateral_val = bool((pg["is_margin_call_collateral"] == True).any()) if "is_margin_call_collateral" in pg.columns else False
                     tcode_col = pg.get("transaction_code") if "transaction_code" in pg.columns else None
                     has_rsu_vest = bool((tcode_col == "M").any()) if tcode_col is not None else False
@@ -407,11 +409,13 @@ def aggregates_monthly_quarterly(
                 n_10b5 = int((pg["is_10b5_1"] == True).sum()) if "is_10b5_1" in pg.columns else 0
                 n_total = len(pg)
                 period_10b5_1_status = "all" if n_total and n_10b5 == n_total else ("mixed" if n_10b5 else "none")
+                # All distinct 10b5-1 plan adoption dates in this period (multiple filings can have different dates)
                 plan_adoption_date_val = None
                 if "plan_adoption_date" in pg.columns:
-                    non_null = pg["plan_adoption_date"].dropna()
-                    if len(non_null):
-                        plan_adoption_date_val = str(non_null.iloc[0])
+                    non_null = pg["plan_adoption_date"].dropna().astype(str).str.strip()
+                    unique_dates = sorted(non_null[non_null != ""].unique())
+                    if unique_dates:
+                        plan_adoption_date_val = ", ".join(unique_dates)
                 is_margin_call_collateral_val = bool((pg["is_margin_call_collateral"] == True).any()) if "is_margin_call_collateral" in pg.columns else False
                 # Low-signal: RSU vest (M), tax withholding (F), gift (G), 10b5-1
                 tcode_col = pg.get("transaction_code") if "transaction_code" in pg.columns else None

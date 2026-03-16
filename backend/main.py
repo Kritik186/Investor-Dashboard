@@ -450,7 +450,7 @@ def get_top(
     lookback_days: int = Query(365, alias="lookback_days"),
     transaction_types: Optional[str] = Query(None, alias="transaction_types"),
 ):
-    """Top 15 insiders by shares held; optional transaction_types (comma-separated: P, S, 10b5-1, rsu_vest, tax_withholding, gift)."""
+    """Top 15 insiders by shares held (recent). Always uses all transactions so shares held does not change with type filter."""
     ticker = ticker.upper()
     with Session(engine) as session:
         company = session.get(Company, ticker)
@@ -461,9 +461,8 @@ def get_top(
     txns_dict = [_txn_to_dict(t) for t in txns]
     for d in txns_dict:
         d["transaction_date"] = d["transaction_date"][:10] if d.get("transaction_date") else None
-    types_set = _parse_transaction_types(transaction_types)
-    txns_dict = _filter_txns_dict(txns_dict, list(types_set) if types_set else None)
-    top = top_15_insiders(txns_dict, lookback_days=None)
+    # Always use unfiltered transactions for top/shares held so the number does not change with type filter
+    top = top_15_insiders(txns_dict, lookback_days=lookback_days)
     return {"ticker": ticker, "lookback_days": lookback_days, "top_insiders": top}
 
 

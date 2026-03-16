@@ -242,6 +242,65 @@ def _parse_non_derivative_transactions(root: ET.Element, footnote_map: Optional[
     return out
 
 
+def _parse_derivative_transactions(root: ET.Element, footnote_map: Optional[dict[str, str]] = None) -> list[dict]:
+    """
+    Parse derivativeTable/derivativeTransaction (Table II).
+    Returns list of dicts with same shape as non-derivative where possible, plus:
+    is_derivative=True, derivative_security_title, exercise_price for RSU classification.
+    """
+    footnote_map = footnote_map or {}
+    out: list[dict] = []
+    for table in root.findall(".//derivativeTable"):
+        table_derivative_title = _find_text(table, "securityTitle/value") or _find_text(table, "securityTitle") or None
+        for txn in table.findall("derivativeTransaction"):
+            tdate = _find_text(txn, "transactionDate/value") or _find_text(txn, "transactionDate")
+            tcode = _find_text(txn, "transactionCoding/transactionCode") or _find_text(txn, "transactionCode")
+            # Conversion or exercise price of derivative
+            exercise_price = _find_float(
+                txn,
+                "conversionOrExercisePrice/value",
+                "conversionOrExercisePrice",
+                "exercisePrice/value",
+                "exercisePrice",
+            )
+            acq_raw = _find_text(
+                txn,
+                "transactionAmounts/transactionAcquiredDisposedCode/value",
+                "transactionAmounts/acquisitionDispositionCode/value",
+                "transactionCoding/transactionFormType",
+            )
+            acq_disp = (acq_raw or "").upper()[:1] if acq_raw else None
+            if acq_disp and acq_disp not in ("A", "D"):
+                acq_disp = "A" if "A" in (acq_raw or "").upper() else "D" if "D" in (acq_raw or "").upper() else None
+            # Underlying shares
+            shares = _find_float(
+                txn,
+                "transactionAmounts/shares/value",
+                "transactionAmounts/transactionShares/value",
+                "underlyingShares/value",
+            )
+            value_usd = _find_float(txn, "transactionAmounts/value")
+            shares_following = _find_float(txn, "postTransactionAmounts/sharesOwnedFollowingTransaction/value")
+            footnote_ids = _footnote_ids_for_element(txn)
+            footnotes = [footnote_map[i] for i in footnote_ids if i in footnote_map]
+            derivative_title = _find_text(txn, "securityTitle/value") or _find_text(txn, "securityTitle") or table_derivative_title or ""
+            out.append({
+                "transaction_date": tdate,
+                "transaction_code": tcode,
+                "acq_disp": acq_disp,
+                "shares": shares,
+                "price": exercise_price,
+                "value_usd": value_usd,
+                "shares_owned_following": shares_following,
+                "footnotes": footnotes,
+                "security_title": table_derivative_title or derivative_title,
+                "is_derivative": True,
+                "derivative_security_title": derivative_title or table_derivative_title or "",
+                "exercise_price": exercise_price,
+            })
+    return out
+
+
 def _parse_ownership_roots(root: ET.Element) -> list[dict]:
     """
     Parse reporting owner from root. SEC Form 4 often has root with direct children
@@ -350,15 +409,24 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
     footnote_map = _collect_footnotes(root)
     ownerships = _parse_ownership_roots(root)
     txns = _parse_non_derivative_transactions(root, footnote_map)
+    for t in txns:
+        t["is_derivative"] = False
+        t["derivative_security_title"] = ""
+        t["exercise_price"] = t.get("price")
+    derivative_txns = _parse_derivative_transactions(root, footnote_map)
+    txns = txns + derivative_txns
     if not ownerships:
         ownerships = [{"insider_name": "", "insider_cik": "", "is_director": False, "is_officer": False, "is_ten_percent_owner": False, "officer_title": None, "security_title": None}]
     form_aff10b5_one = _parse_form_level_10b5_1(root)
+    full_filing_footnotes = " ".join(footnote_map.values()) if footnote_map else ""
     meta = ownerships[0]
     # Classify each transaction (same-date peers for RSU vest pattern)
     for i, t in enumerate(txns):
         tdate = t.get("transaction_date")
         same_date = [t2 for j, t2 in enumerate(txns) if j != i and t2.get("transaction_date") == tdate]
-        classification = classify_transaction(t, same_date_txns=same_date, form_aff10b5_one=form_aff10b5_one)
+        classification = classify_transaction(
+            t, same_date_txns=same_date, form_aff10b5_one=form_aff10b5_one, full_filing_footnotes=full_filing_footnotes
+        )
         t["is_10b5_1"] = classification.get("is_10b5_1", False)
         t["plan_adoption_date"] = classification.get("plan_adoption_date")
         t["is_margin_call_collateral"] = classification.get("is_margin_call_collateral", False)
