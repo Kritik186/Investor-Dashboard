@@ -4,7 +4,7 @@ export type ResolveResult = { cik10: string; name: string };
 export type DefaultCompany = { ticker: string; label: string };
 export type TopInsider = { insider_cik: string; insider_name: string; shares_held_recent: number };
 export type Holding = { insider_cik: string; insider_name: string; date: string; shares_owned_following: number };
-export type DispositionLink = { transaction_date: string; shares: number; xml_url: string | null };
+export type DispositionLink = { transaction_date: string; shares: number; xml_url: string | null; is_margin_call_collateral?: boolean };
 
 export type Aggregate = {
   insider_cik: string;

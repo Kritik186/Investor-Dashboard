@@ -437,7 +437,7 @@ export function PctSoldTab({
                                       {a.dispositions && a.dispositions.length > 0 ? (
                                         <ul className="flex flex-col gap-0.5 max-h-24 overflow-y-auto pr-1">
                                           {a.dispositions.map((d, j) => (
-                                            <li key={j} className="flex items-center gap-1">
+                                            <li key={j} className="flex items-center gap-1 flex-wrap">
                                               <a
                                                 href={d.xml_url ?? "#"}
                                                 target="_blank"
@@ -448,6 +448,11 @@ export function PctSoldTab({
                                                 <ExternalLink className="h-3 w-3 shrink-0" />
                                                 {d.transaction_date}
                                               </a>
+                                              {d.is_margin_call_collateral ? (
+                                                <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 font-medium">
+                                                  Margin call
+                                                </span>
+                                              ) : null}
                                             </li>
                                           ))}
                                         </ul>

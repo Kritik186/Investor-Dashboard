@@ -301,7 +301,8 @@ def aggregates_monthly_quarterly(
                             total_shares = float(subset["shares"].sum())
                             first_d = subset.iloc[0].get("transaction_date")
                             td_str = first_d.isoformat()[:10] if hasattr(first_d, "isoformat") else str(first_d)[:10] if first_d else ""
-                            dispositions.append({"transaction_date": td_str, "shares": total_shares, "xml_url": url})
+                            disp_margin = bool((subset["is_margin_call_collateral"] == True).any()) if "is_margin_call_collateral" in subset.columns else False
+                            dispositions.append({"transaction_date": td_str, "shares": total_shares, "xml_url": url, "is_margin_call_collateral": disp_margin})
                     results.append({
                         "insider_cik": insider_cik,
                         "insider_name": insider_name,
@@ -434,7 +435,8 @@ def aggregates_monthly_quarterly(
                         total_shares = float(subset["shares"].sum())
                         first_d = subset.iloc[0].get("transaction_date")
                         td_str = first_d.isoformat()[:10] if hasattr(first_d, "isoformat") else str(first_d)[:10] if first_d else ""
-                        dispositions.append({"transaction_date": td_str, "shares": total_shares, "xml_url": url})
+                        disp_margin = bool((subset["is_margin_call_collateral"] == True).any()) if "is_margin_call_collateral" in subset.columns else False
+                        dispositions.append({"transaction_date": td_str, "shares": total_shares, "xml_url": url, "is_margin_call_collateral": disp_margin})
                 results.append({
                     "insider_cik": insider_cik,
                     "insider_name": insider_name,

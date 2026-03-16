@@ -137,11 +137,20 @@ def classify_transaction(
     if plan_adoption_date and is_10b5_1:
         reasons.append(f"plan adoption date: {plan_adoption_date}")
 
-    # --- 1c. Sale due to margin call / collateral ---
-    is_margin_call_collateral = False
-    if _has_phrase(footnote_text, "margin call", "collateral"):
-        is_margin_call_collateral = True
-        reasons.append("footnote indicates margin call or collateral")
+    # --- 1c. Sale due to margin call / collateral (explicit phrases only; no inference) ---
+    _MARGIN_COLLATERAL_PHRASES = (
+        "margin call",
+        "margin requirements",
+        "forced sale",
+        "sale by broker",
+        "collateral",
+        "pledged shares",
+        "margin loan",
+    )
+    combined_footnote_text = f"{(footnote_text or '').strip()} {(full_filing_footnotes or '').strip()}".strip()
+    is_margin_call_collateral = _has_phrase(combined_footnote_text, *_MARGIN_COLLATERAL_PHRASES)
+    if is_margin_call_collateral:
+        reasons.append("footnote indicates margin call or collateral (explicit phrase)")
 
     # --- 2. Gift ---
     is_gift = False

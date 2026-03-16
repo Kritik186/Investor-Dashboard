@@ -607,7 +607,11 @@ export function Dashboard() {
                 aggregates={aggregatesData?.aggregates ?? []}
                 period={period}
                 topInsiders={topData?.top_insiders ?? []}
-                show10b5Columns={selectedTransactionTypes.includes("10b5-1")}
+                show10b5Columns={
+                  selectedTransactionTypes.length === 0 ||
+                  selectedTransactionTypes.includes("S") ||
+                  selectedTransactionTypes.includes("10b5-1")
+                }
               />
             </TabsContent>
             <TabsContent value="transactions" className="space-y-4">
