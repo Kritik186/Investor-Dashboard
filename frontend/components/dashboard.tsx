@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toast, ToastViewport } from "@/components/ui/toast";
-import { Search, RefreshCw, TrendingUp, Percent, Table2, X, Loader2 } from "lucide-react";
+import { Search, RefreshCw, TrendingUp, Percent, Table2, X, Loader2, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import { Select } from "@/components/ui/select";
 import {
   resolveTicker,
   syncTicker,
+  backfillTicker,
   fetchKpis,
   fetchTop,
   fetchAggregates,
@@ -19,9 +20,18 @@ import {
   fetchDefaultCompanies,
   deleteCompany,
   type Kpis,
-  type Transaction,
   type DefaultCompany,
 } from "@/lib/api";
+
+/** Transaction type filter: open market + sale-type (RSU vest, tax withholding, gift, 10b5-1). */
+const TRANSACTION_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "P", label: "Open market purchase" },
+  { value: "S", label: "Open market sale" },
+  { value: "rsu_vest", label: "Sale is RSU vest" },
+  { value: "tax_withholding", label: "Tax withholding" },
+  { value: "gift", label: "Gift" },
+  { value: "10b5-1", label: "10b5-1" },
+];
 import { formatCurrency, formatNumber, formatDate } from "@/lib/utils";
 import { HoldingsChart } from "@/components/dashboard/holdings-chart";
 import { PctSoldTab } from "@/components/dashboard/pct-sold-tab";
@@ -116,11 +126,13 @@ export function Dashboard() {
   const [isCustomMode, setIsCustomMode] = useState(false);
   const [customInputStr, setCustomInputStr] = useState("30"); // string so user can type/clear freely
   const [period, setPeriod] = useState<"month" | "quarter">("month");
-  const [filter10b5_1, setFilter10b5_1] = useState<"all" | "only" | "exclude">("all");
+  const [selectedTransactionTypes, setSelectedTransactionTypes] = useState<string[]>([]);
+  const [transactionTypesOpen, setTransactionTypesOpen] = useState(false);
   const [toastOpen, setToastOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ title: string; description?: string; variant?: "success" | "error" }>({ title: "" });
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<string>("");
+  const [isBackfilling, setIsBackfilling] = useState(false);
   const [deletingTicker, setDeletingTicker] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const customDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -142,14 +154,19 @@ export function Dashboard() {
     };
   }, [customInputStr, showCustomInput]);
 
-  // When lookback or ticker changes, invalidate dashboard queries so they refetch
+  const transactionFilter = useMemo(
+    () => ({ transaction_types: selectedTransactionTypes }),
+    [selectedTransactionTypes]
+  );
+
+  // When lookback, ticker, or filter changes, invalidate dashboard queries so they refetch
   useEffect(() => {
     if (!ticker) return;
     queryClient.invalidateQueries({ queryKey: ["kpis", ticker] });
     queryClient.invalidateQueries({ queryKey: ["top", ticker] });
     queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
     queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
-  }, [lookbackDays, ticker, queryClient]);
+  }, [lookbackDays, ticker, transactionFilter, queryClient]);
 
   // Auto-sync when company changes so data flows without clicking Refresh; show progress
   useEffect(() => {
@@ -217,6 +234,35 @@ export function Dashboard() {
     }
   }, [ticker, lookbackDays, showToast, queryClient]);
 
+  const handleBackfill = useCallback(async () => {
+    if (!ticker) return;
+    const companyLabel = allCompanies.find((c) => c.ticker === ticker)?.label ?? ticker;
+    if (
+      !window.confirm(
+        `Backfill will delete all existing data for ${companyLabel} (${ticker}) and re-fetch everything from the SEC. This may take a minute. Continue?`
+      )
+    )
+      return;
+    setIsBackfilling(true);
+    setSyncProgress("Clearing data and re-fetching from SEC…");
+    try {
+      const res = await backfillTicker(ticker, lookbackDays);
+      showToast(
+        "Backfill complete",
+        `${res.transactions_created} transactions stored from ${res.processed} filings. Data has been fully refreshed.`
+      );
+      queryClient.invalidateQueries({ queryKey: ["kpis", ticker] });
+      queryClient.invalidateQueries({ queryKey: ["top", ticker] });
+      queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
+      queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
+    } catch (e) {
+      showToast("Backfill failed", (e as Error).message);
+    } finally {
+      setIsBackfilling(false);
+      setSyncProgress("");
+    }
+  }, [ticker, lookbackDays, allCompanies, showToast, queryClient]);
+
   const handleDeleteCompany = useCallback(
     async (c: DefaultCompany) => {
       if (!window.confirm(`Remove ${c.label} (${c.ticker}) from the dashboard and delete its data from the server?`)) return;
@@ -250,36 +296,43 @@ export function Dashboard() {
   );
 
   const { data: kpis, isLoading: kpisLoading } = useQuery({
-    queryKey: ["kpis", ticker, lookbackDays],
-    queryFn: () => fetchKpis(ticker!, lookbackDays),
+    queryKey: ["kpis", ticker, lookbackDays, transactionFilter],
+    queryFn: () => fetchKpis(ticker!, lookbackDays, transactionFilter),
     enabled: !!ticker,
   });
 
   const { data: topData } = useQuery({
-    queryKey: ["top", ticker, lookbackDays],
-    queryFn: () => fetchTop(ticker!, lookbackDays),
+    queryKey: ["top", ticker, lookbackDays, transactionFilter],
+    queryFn: () => fetchTop(ticker!, lookbackDays, transactionFilter),
     enabled: !!ticker,
   });
 
   const { data: aggregatesData } = useQuery({
-    queryKey: ["aggregates", ticker, lookbackDays, period, filter10b5_1],
-    queryFn: () => fetchAggregates(ticker!, lookbackDays, period, filter10b5_1),
+    queryKey: ["aggregates", ticker, lookbackDays, period, selectedTransactionTypes],
+    queryFn: () => fetchAggregates(ticker!, lookbackDays, period, selectedTransactionTypes),
     enabled: !!ticker,
   });
 
   const { data: transactionsData } = useQuery({
-    queryKey: ["transactions", ticker, lookbackDays],
-    queryFn: () => fetchTransactions(ticker!, lookbackDays, { limit: 100, offset: 0 }),
+    queryKey: ["transactions", ticker, lookbackDays, 0, transactionFilter],
+    queryFn: () =>
+      fetchTransactions(ticker!, lookbackDays, {
+        limit: 100,
+        offset: 0,
+        transaction_types: transactionFilter.transaction_types,
+      }),
     enabled: !!ticker,
   });
 
   return (
     <div className="container relative mx-auto max-w-7xl space-y-6 p-6">
-      {isSyncing && (
+      {(isSyncing || isBackfilling) && (
         <div className="absolute inset-0 z-50 flex items-start justify-center bg-background/80 pt-24 backdrop-blur-[2px]">
           <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-card px-6 py-4 shadow-lg">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <p className="text-sm font-medium">Syncing data for {ticker ?? "company"}</p>
+            <p className="text-sm font-medium">
+              {isBackfilling ? "Backfilling" : "Syncing"} data for {ticker ?? "company"}
+            </p>
             <p className="text-xs text-muted-foreground">{syncProgress || "Please wait…"}</p>
           </div>
         </div>
@@ -442,20 +495,66 @@ export function Dashboard() {
               Quarter
             </button>
           </div>
-          <Select
-            value={filter10b5_1}
-            onChange={(e) => setFilter10b5_1(e.target.value as "all" | "only" | "exclude")}
-            className="w-[180px]"
-          >
-            <option value="all">All transactions</option>
-            <option value="only">10b5-1 only</option>
-            <option value="exclude">Non-10b5-1</option>
-          </Select>
-          <Button onClick={handleRefresh} disabled={!ticker || isSyncing} variant="outline" size="sm">
+          <div className="relative">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-w-[200px] justify-between"
+              onClick={() => setTransactionTypesOpen((o) => !o)}
+              onBlur={() => setTimeout(() => setTransactionTypesOpen(false), 150)}
+            >
+              <span className="truncate">
+                {selectedTransactionTypes.length === 0
+                  ? "Transaction types: All"
+                  : `Types: ${selectedTransactionTypes.length} selected`}
+              </span>
+              <span className="ml-2 shrink-0 opacity-50">▾</span>
+            </Button>
+            {transactionTypesOpen && (
+              <div
+                className="absolute left-0 top-full z-50 mt-1 max-h-64 w-72 overflow-auto rounded-md border border-border bg-card py-1 shadow-lg"
+                role="listbox"
+              >
+                {TRANSACTION_TYPE_OPTIONS.map(({ value, label }) => {
+                  const checked = selectedTransactionTypes.includes(value);
+                  return (
+                    <label
+                      key={value}
+                      className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted/50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setSelectedTransactionTypes((prev) =>
+                            prev.includes(value) ? prev.filter((t) => t !== value) : [...prev, value]
+                          );
+                        }}
+                        className="h-4 w-4 rounded border-input"
+                      />
+                      <span>{label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <Button onClick={handleRefresh} disabled={!ticker || isSyncing || isBackfilling} variant="outline" size="sm">
             <RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
             {isSyncing ? "Syncing…" : "Refresh"}
           </Button>
-          {isSyncing && syncProgress && (
+          <Button
+            onClick={handleBackfill}
+            disabled={!ticker || isSyncing || isBackfilling}
+            variant="outline"
+            size="sm"
+            title="Delete all data for this company and re-fetch from SEC (use after schema changes)"
+          >
+            <Database className={`mr-2 h-4 w-4 ${isBackfilling ? "animate-spin" : ""}`} />
+            {isBackfilling ? "Backfilling…" : "Backfill"}
+          </Button>
+          {(isSyncing || isBackfilling) && syncProgress && (
             <span className="text-sm text-muted-foreground">{syncProgress}</span>
           )}
         </div>
@@ -500,6 +599,7 @@ export function Dashboard() {
                 lookbackDays={lookbackDays}
                 period={period}
                 topInsiders={topData?.top_insiders ?? []}
+                transactionFilter={transactionFilter}
               />
             </TabsContent>
             <TabsContent value="pct-sold" className="space-y-4">
@@ -507,11 +607,16 @@ export function Dashboard() {
                 aggregates={aggregatesData?.aggregates ?? []}
                 period={period}
                 topInsiders={topData?.top_insiders ?? []}
-                filter10b5_1={filter10b5_1}
+                show10b5Columns={selectedTransactionTypes.includes("10b5-1")}
               />
             </TabsContent>
             <TabsContent value="transactions" className="space-y-4">
-              <TransactionsTable ticker={ticker} lookbackDays={lookbackDays} initialData={transactionsData?.transactions ?? []} />
+              <TransactionsTable
+                ticker={ticker}
+                lookbackDays={lookbackDays}
+                initialData={transactionsData?.transactions ?? []}
+                transactionFilter={transactionFilter}
+              />
             </TabsContent>
           </Tabs>
         </>

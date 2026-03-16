@@ -12,7 +12,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import type { TopInsider, Transaction } from "@/lib/api";
+import type { TopInsider, Transaction, TransactionTypeFilter } from "@/lib/api";
 import { fetchTransactions } from "@/lib/api";
 
 function formatNumber(n: number): string {
@@ -39,18 +39,25 @@ export function HoldingsChart({
   lookbackDays,
   period,
   topInsiders,
+  transactionFilter,
 }: {
   ticker: string;
   lookbackDays: number;
   period: "month" | "quarter";
   topInsiders: TopInsider[];
+  transactionFilter?: TransactionTypeFilter;
 }) {
   const [selectedInsider, setSelectedInsider] = useState<TopInsider | null>(null);
 
   const { data: transactionsData, isLoading: transactionsLoading } = useQuery({
-    queryKey: ["transactions", ticker, lookbackDays, selectedInsider?.insider_cik],
+    queryKey: ["transactions", ticker, lookbackDays, selectedInsider?.insider_cik, transactionFilter],
     queryFn: () =>
-      fetchTransactions(ticker, lookbackDays, { insider_cik: selectedInsider!.insider_cik, limit: 500, offset: 0 }),
+      fetchTransactions(ticker, lookbackDays, {
+        insider_cik: selectedInsider!.insider_cik,
+        limit: 500,
+        offset: 0,
+        transaction_types: transactionFilter?.transaction_types,
+      }),
     enabled: !!ticker && !!selectedInsider?.insider_cik,
   });
 

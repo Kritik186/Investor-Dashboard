@@ -9,6 +9,8 @@ from xml.etree import ElementTree as ET
 
 from sec_client import get_filing_index_json, get_filing_xml
 
+from transaction_classifier import classify_transaction
+
 
 def _strip_ns(tag: str) -> str:
     """Strip XML namespace from tag so find() works on SEC XML."""
@@ -112,6 +114,55 @@ def _find_float(txn: ET.Element, *paths: str) -> Optional[float]:
     return _float_val(v) if v is not None else None
 
 
+def _collect_footnotes(root: ET.Element) -> dict[str, str]:
+    """
+    Build a map footnote_id -> footnote text from the document.
+    Handles SEC patterns: footnote with id attribute or child id element; text in value or element text.
+    Tag matching is case-insensitive (footnote / footNote).
+    """
+    out: dict[str, str] = {}
+    for el in root.iter():
+        tag_local = _strip_ns(el.tag)
+        if (tag_local or "").lower() != "footnote":
+            continue
+        fid = el.get("id") or _text(el.find("id"))
+        if not fid:
+            continue
+        text = _text(el.find("value")) or (el.text or "").strip()
+        if text:
+            out[fid.strip()] = text
+    return out
+
+
+def _footnote_ids_for_element(el: ET.Element) -> list[str]:
+    """Collect all footnote IDs referenced by this element: footnoteId/footNoteId children and any *FootnoteId attributes."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for child in el.iter():
+        tag = _strip_ns(child.tag)
+        if (tag or "").lower() == "footnoteid":
+            t = (child.text or "").strip()
+            if t and t not in seen:
+                ids.append(t)
+                seen.add(t)
+        if (tag or "").lower() == "footnoteids":
+            for sub in child:
+                st = _strip_ns(sub.tag)
+                if (st or "").lower() == "footnoteid":
+                    t = (sub.text or "").strip()
+                    if t and t not in seen:
+                        ids.append(t)
+                        seen.add(t)
+        for attr_name, attr_val in (child.attrib or {}).items():
+            an = (attr_name or "").lower()
+            if an.endswith("footnoteid") or an == "footnoteid":
+                v = (attr_val or "").strip()
+                if v and v not in seen:
+                    ids.append(v)
+                    seen.add(v)
+    return ids
+
+
 def _parse_form_level_10b5_1(root: ET.Element) -> Optional[bool]:
     """
     Parse Rule 10b5-1(c) at form level (one value per Form 4 filing).
@@ -136,14 +187,17 @@ def _parse_form_level_10b5_1(root: ET.Element) -> Optional[bool]:
     return None
 
 
-def _parse_non_derivative_transactions(root: ET.Element) -> list[dict]:
+def _parse_non_derivative_transactions(root: ET.Element, footnote_map: Optional[dict[str, str]] = None) -> list[dict]:
     """
     Parse nonDerivativeTable/nonDerivativeTransaction.
     Uses same element paths as working Streamlit reference (transactionShares, transactionPricePerShare,
     transactionAcquiredDisposedCode) with fallbacks for alternate SEC schema names.
+    footnote_map: id -> text; if provided, each transaction gets a "footnotes" list of resolved texts.
     """
+    footnote_map = footnote_map or {}
     out: list[dict] = []
     for table in root.findall(".//nonDerivativeTable"):
+        table_security_title = _find_text(table, "securityTitle/value") or _find_text(table, "securityTitle") or None
         for txn in table.findall("nonDerivativeTransaction"):
             tdate = _find_text(txn, "transactionDate/value")
             tcode = _find_text(txn, "transactionCoding/transactionCode")
@@ -172,6 +226,8 @@ def _parse_non_derivative_transactions(root: ET.Element) -> list[dict]:
             if value_usd is None and shares is not None and price is not None:
                 value_usd = shares * price
             shares_following = _find_float(txn, "postTransactionAmounts/sharesOwnedFollowingTransaction/value")
+            footnote_ids = _footnote_ids_for_element(txn)
+            footnotes = [footnote_map[i] for i in footnote_ids if i in footnote_map]
             out.append({
                 "transaction_date": tdate,
                 "transaction_code": tcode,
@@ -180,6 +236,8 @@ def _parse_non_derivative_transactions(root: ET.Element) -> list[dict]:
                 "price": price,
                 "value_usd": value_usd,
                 "shares_owned_following": shares_following,
+                "footnotes": footnotes,
+                "security_title": table_security_title,
             })
     return out
 
@@ -215,6 +273,7 @@ def _parse_one_ownership_from_reporter(reporter: ET.Element) -> dict:
         "insider_cik": "",
         "is_director": False,
         "is_officer": False,
+        "is_ten_percent_owner": False,
         "officer_title": None,
         "security_title": None,
     }
@@ -226,13 +285,14 @@ def _parse_one_ownership_from_reporter(reporter: ET.Element) -> dict:
     if r_rel is not None:
         d["is_director"] = _text(r_rel.find("isDirector")).upper() == "1"
         d["is_officer"] = _text(r_rel.find("isOfficer")).upper() == "1"
+        d["is_ten_percent_owner"] = _text(r_rel.find("isTenPercentOwner")).upper() == "1"
         d["officer_title"] = _text(r_rel.find("officerTitle")) or None
     return d
 
 
 def _parse_one_ownership(ownership: ET.Element) -> dict:
     d: dict = {
-        "insider_name": "", "insider_cik": "", "is_director": False, "is_officer": False, "officer_title": None, "security_title": None,
+        "insider_name": "", "insider_cik": "", "is_director": False, "is_officer": False, "is_ten_percent_owner": False, "officer_title": None, "security_title": None,
     }
     reporter = ownership.find("reportingOwner")
     if reporter is not None:
@@ -252,6 +312,7 @@ def _parse_info_table_info(info: ET.Element) -> Optional[dict]:
         "insider_cik": "",
         "is_director": False,
         "is_officer": False,
+        "is_ten_percent_owner": False,
         "officer_title": None,
         "security_title": None,
     }
@@ -263,6 +324,7 @@ def _parse_info_table_info(info: ET.Element) -> Optional[dict]:
     if r_rel is not None:
         d["is_director"] = _text(r_rel.find("isDirector")).upper() == "1"
         d["is_officer"] = _text(r_rel.find("isOfficer")).upper() == "1"
+        d["is_ten_percent_owner"] = _text(r_rel.find("isTenPercentOwner")).upper() == "1"
         d["officer_title"] = _text(r_rel.find("officerTitle")) or None
     sec = info.find("securityTitle/value")
     if sec is None:
@@ -276,23 +338,35 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
     """
     Parse Form 4 XML and return list of normalized transaction dicts suitable for DB.
     Strips XML namespaces first (as in working reference) so find() matches SEC tags.
-    10b5-1 is form-level (one value per filing); we parse it once and set the same is_10b5_1 on every transaction.
-    Each dict has: accession, company_cik, insider_cik, insider_name, is_director, is_officer,
-    officer_title, security_title, transaction_date, transaction_code, acq_disp, shares, price,
-    value_usd, shares_owned_following, is_10b5_1 (form-level), xml_url.
+    Each transaction is classified (is_10b5_1, is_gift, is_tax_withholding, is_rsu_vest_related)
+    from transaction code, footnotes, and same-date transactions.
+    Each dict has: accession, company_cik, insider_*, security_title, transaction_*, shares, price,
+    value_usd, shares_owned_following, is_10b5_1, is_rsu_vest_related, is_tax_withholding, is_gift,
+    classification_confidence, classification_reasoning, xml_url.
     """
     root = ET.fromstring(xml_text)
-    # Strip namespaces so find() works on SEC Form 4 XML (same as working reference)
     for el in root.iter():
         el.tag = _strip_ns(el.tag)
+    footnote_map = _collect_footnotes(root)
     ownerships = _parse_ownership_roots(root)
-    txns = _parse_non_derivative_transactions(root)
+    txns = _parse_non_derivative_transactions(root, footnote_map)
     if not ownerships:
-        ownerships = [{"insider_name": "", "insider_cik": "", "is_director": False, "is_officer": False, "officer_title": None, "security_title": None}]
-    # 10b5-1 is form-level: one value per filing (not per transaction)
-    form_is_10b5_1 = _parse_form_level_10b5_1(root)
-    # One ownership per form typically; if multiple, replicate txns per owner (simplified: use first)
+        ownerships = [{"insider_name": "", "insider_cik": "", "is_director": False, "is_officer": False, "is_ten_percent_owner": False, "officer_title": None, "security_title": None}]
+    form_aff10b5_one = _parse_form_level_10b5_1(root)
     meta = ownerships[0]
+    # Classify each transaction (same-date peers for RSU vest pattern)
+    for i, t in enumerate(txns):
+        tdate = t.get("transaction_date")
+        same_date = [t2 for j, t2 in enumerate(txns) if j != i and t2.get("transaction_date") == tdate]
+        classification = classify_transaction(t, same_date_txns=same_date, form_aff10b5_one=form_aff10b5_one)
+        t["is_10b5_1"] = classification.get("is_10b5_1", False)
+        t["plan_adoption_date"] = classification.get("plan_adoption_date")
+        t["is_margin_call_collateral"] = classification.get("is_margin_call_collateral", False)
+        t["is_gift"] = classification.get("is_gift", False)
+        t["is_tax_withholding"] = classification.get("is_tax_withholding", False)
+        t["is_rsu_vest_related"] = classification.get("is_rsu_vest_related", False)
+        t["classification_confidence"] = classification.get("classification_confidence", "low")
+        t["classification_reasoning"] = classification.get("reasoning", "")
     result = []
     for t in txns:
         result.append({
@@ -302,8 +376,9 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
             "insider_name": meta.get("insider_name", ""),
             "is_director": meta.get("is_director", False),
             "is_officer": meta.get("is_officer", False),
+            "is_ten_percent_owner": meta.get("is_ten_percent_owner", False),
             "officer_title": meta.get("officer_title"),
-            "security_title": meta.get("security_title"),
+            "security_title": t.get("security_title") or meta.get("security_title"),
             "transaction_date": t.get("transaction_date"),
             "transaction_code": t.get("transaction_code"),
             "acq_disp": t.get("acq_disp"),
@@ -311,7 +386,14 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
             "price": t.get("price"),
             "value_usd": t.get("value_usd"),
             "shares_owned_following": t.get("shares_owned_following"),
-            "is_10b5_1": form_is_10b5_1,
+            "is_10b5_1": t.get("is_10b5_1"),
+            "plan_adoption_date": t.get("plan_adoption_date"),
+            "is_margin_call_collateral": t.get("is_margin_call_collateral"),
+            "is_gift": t.get("is_gift"),
+            "is_tax_withholding": t.get("is_tax_withholding"),
+            "is_rsu_vest_related": t.get("is_rsu_vest_related"),
+            "classification_confidence": t.get("classification_confidence"),
+            "classification_reasoning": t.get("classification_reasoning"),
             "xml_url": xml_url,
         })
     return result

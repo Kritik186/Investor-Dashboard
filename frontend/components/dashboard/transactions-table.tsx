@@ -11,7 +11,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { fetchTransactions, type Transaction } from "@/lib/api";
+import { fetchTransactions, type Transaction, type TransactionTypeFilter } from "@/lib/api";
 import { formatCurrency, formatNumber, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -19,18 +19,25 @@ export function TransactionsTable({
   ticker,
   lookbackDays,
   initialData,
+  transactionFilter,
 }: {
   ticker: string;
   lookbackDays: number;
   initialData: Transaction[];
+  transactionFilter?: TransactionTypeFilter;
 }) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "transaction_date", desc: true }]);
   const [pageIndex, setPageIndex] = useState(0);
   const pageSize = 20;
 
   const { data, isLoading } = useQuery({
-    queryKey: ["transactions", ticker, lookbackDays, pageIndex],
-    queryFn: () => fetchTransactions(ticker, lookbackDays, { limit: pageSize, offset: pageIndex * pageSize }),
+    queryKey: ["transactions", ticker, lookbackDays, pageIndex, transactionFilter],
+    queryFn: () =>
+      fetchTransactions(ticker, lookbackDays, {
+        limit: pageSize,
+        offset: pageIndex * pageSize,
+        transaction_types: transactionFilter?.transaction_types,
+      }),
     placeholderData: pageIndex === 0 ? { transactions: initialData, limit: pageSize, offset: 0 } : undefined,
   });
 

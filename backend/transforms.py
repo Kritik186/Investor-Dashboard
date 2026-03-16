@@ -163,13 +163,15 @@ def aggregates_monthly_quarterly(
     lookback_days: int = 365,
     period: str = "month",
     position_before_cutoff: Optional[dict] = None,
+    use_synthetic_positions: bool = False,
 ) -> list[dict]:
     """
     Monthly or quarterly aggregates for top 15: shares_sold, shares_bought, value_sold_usd,
-    value_bought_usd, pct_sold. start_shares = previous known shares_owned_following before period
-    (within range, or from position_before_cutoff when no prior txns in range); if missing,
-    pct_sold = null and label "insufficient data".
-    position_before_cutoff: optional dict insider_cik -> shares_owned_following (last before cutoff).
+    value_bought_usd, pct_sold.
+    When use_synthetic_positions is False: start_shares/end_shares from shares_owned_following
+    (actual position from filings). When True (e.g. transaction type filter active): start/end/change
+    are computed only from the passed-in transactions (synthetic running balance).
+    position_before_cutoff: insider_cik -> shares (last before cutoff, or synthetic sum A-D before cutoff).
     """
     try:
         if not transactions or not top_15:
@@ -195,6 +197,7 @@ def aggregates_monthly_quarterly(
             following = t.get("shares_owned_following")
             t_id = t.get("id")
             is_10b5 = t.get("is_10b5_1")
+            tcode = (t.get("transaction_code") or "").strip().upper()
             rows.append({
                 "insider_cik": t["insider_cik"],
                 "insider_name": t.get("insider_name"),
@@ -205,6 +208,11 @@ def aggregates_monthly_quarterly(
                 "acq_disp": acq,
                 "shares_owned_following": float(following) if following is not None else None,
                 "is_10b5_1": is_10b5 is True,
+                "plan_adoption_date": t.get("plan_adoption_date"),
+                "is_margin_call_collateral": t.get("is_margin_call_collateral") is True,
+                "transaction_code": tcode or None,
+                "officer_title": t.get("officer_title"),
+                "is_ten_percent_owner": t.get("is_ten_percent_owner") is True,
                 "xml_url": t.get("xml_url"),
             })
         if not rows:
@@ -220,7 +228,104 @@ def aggregates_monthly_quarterly(
         results = []
         for (insider_cik, insider_name), grp in df.groupby(["insider_cik", "insider_name"]):
             grp = grp.sort_values("transaction_date").copy()
-            # Fallback when no data before cutoff (e.g. 3Y lookback but DB has <3Y): back out position at start of range from earliest txn
+            # When using synthetic positions (filtered view), run a running balance per period in order
+            if use_synthetic_positions:
+                # Filtered view: only selected transaction types; each period uses only txns in that period.
+                synthetic_position = float(position_before_cutoff.get(insider_cik, 0) or 0)
+                periods_order = sorted(grp["period_end"].unique(), key=lambda x: (x.isoformat() if hasattr(x, "isoformat") else str(x)))
+                for period_end in periods_order:
+                    pg = grp[grp["period_end"] == period_end].copy()
+                    period_date = period_end if isinstance(period_end, date) else (period_end.date() if hasattr(period_end, "date") and callable(getattr(period_end, "date", None)) else period_end)
+                    if hasattr(period_date, "replace"):
+                        try:
+                            if period == "month":
+                                period_start_date = period_date.replace(day=1)
+                            else:
+                                q_start_month = (period_date.month - 1) // 3 * 3 + 1
+                                period_start_date = period_date.replace(month=q_start_month, day=1)
+                        except Exception:
+                            period_start_date = None
+                    else:
+                        period_start_date = None
+                    if period_start_date is not None and not pg.empty:
+                        pg_dt = pd.to_datetime(pg["transaction_date"])
+                        start_ts = pd.Timestamp(period_start_date)
+                        end_ts = pd.Timestamp(period_end)
+                        pg = pg[(pg_dt >= start_ts) & (pg_dt <= end_ts)]
+                    sold_mask = pg["acq_disp"] == "D"
+                    buy_mask = pg["acq_disp"] == "A"
+                    shares_sold = float(pg.loc[sold_mask, "shares"].sum())
+                    shares_bought = float(pg.loc[buy_mask, "shares"].sum())
+                    vs = pg.loc[sold_mask, "value_usd"].sum()
+                    vb = pg.loc[buy_mask, "value_usd"].sum()
+                    value_sold = None if pd.isna(vs) else float(vs)
+                    value_bought = None if pd.isna(vb) else float(vb)
+                    start_shares = synthetic_position
+                    end_shares = start_shares + shares_bought - shares_sold
+                    change_shares = end_shares - start_shares
+                    synthetic_position = end_shares
+                    has_insufficient = start_shares is None or (isinstance(start_shares, (int, float)) and start_shares == 0)
+                    pct_sold = None if has_insufficient else (float(shares_sold) / float(start_shares) if start_shares else None)
+                    pct_sold_label = "insufficient data" if has_insufficient else None
+                    pe_str = str(period_end)[:10] if period_end else ""
+                    if hasattr(period_end, "isoformat"):
+                        try:
+                            pe_str = period_end.isoformat()[:10]
+                        except Exception:
+                            pe_str = str(period_end)[:10]
+                    ps_str = period_start_date.isoformat()[:10] if period_start_date and hasattr(period_start_date, "isoformat") else ""
+                    n_10b5 = int((pg["is_10b5_1"] == True).sum()) if "is_10b5_1" in pg.columns else 0
+                    n_total = len(pg)
+                    period_10b5_1_status = "all" if n_total and n_10b5 == n_total else ("mixed" if n_10b5 else "none")
+                    plan_adoption_date_val = None
+                    if "plan_adoption_date" in pg.columns:
+                        non_null = pg["plan_adoption_date"].dropna()
+                        if len(non_null):
+                            plan_adoption_date_val = str(non_null.iloc[0])
+                    is_margin_call_collateral_val = bool((pg["is_margin_call_collateral"] == True).any()) if "is_margin_call_collateral" in pg.columns else False
+                    tcode_col = pg.get("transaction_code") if "transaction_code" in pg.columns else None
+                    has_rsu_vest = bool((tcode_col == "M").any()) if tcode_col is not None else False
+                    has_tax_withholding = bool((tcode_col == "F").any()) if tcode_col is not None else False
+                    has_gift = bool((tcode_col == "G").any()) if tcode_col is not None else False
+                    first_row = pg.iloc[0] if not pg.empty else None
+                    officer_title = first_row.get("officer_title") if first_row is not None and hasattr(first_row, "get") else None
+                    is_ten_percent_owner = bool(first_row.get("is_ten_percent_owner", False)) if first_row is not None and hasattr(first_row, "get") else False
+                    # One entry per filing (xml_url): sum shares from selected transactions in this period
+                    dispositions = []
+                    if not pg.empty and "xml_url" in pg.columns:
+                        pg_sorted = pg.sort_values("transaction_date")
+                        for url in pg_sorted["xml_url"].dropna().unique():
+                            subset = pg_sorted[pg_sorted["xml_url"] == url]
+                            total_shares = float(subset["shares"].sum())
+                            first_d = subset.iloc[0].get("transaction_date")
+                            td_str = first_d.isoformat()[:10] if hasattr(first_d, "isoformat") else str(first_d)[:10] if first_d else ""
+                            dispositions.append({"transaction_date": td_str, "shares": total_shares, "xml_url": url})
+                    results.append({
+                        "insider_cik": insider_cik,
+                        "insider_name": insider_name,
+                        "period_start": ps_str,
+                        "period_end": pe_str,
+                        "shares_sold": shares_sold,
+                        "shares_bought": shares_bought,
+                        "value_sold_usd": value_sold,
+                        "value_bought_usd": value_bought,
+                        "start_shares": float(start_shares) if start_shares is not None else None,
+                        "end_shares": float(end_shares) if end_shares is not None else None,
+                        "change_shares": float(change_shares) if change_shares is not None else None,
+                        "pct_sold": pct_sold,
+                        "pct_sold_label": pct_sold_label,
+                        "period_10b5_1_status": period_10b5_1_status,
+                        "plan_adoption_date": plan_adoption_date_val,
+                        "is_margin_call_collateral": is_margin_call_collateral_val,
+                        "has_rsu_vest": has_rsu_vest,
+                        "has_tax_withholding": has_tax_withholding,
+                        "has_gift": has_gift,
+                        "officer_title": officer_title,
+                        "is_ten_percent_owner": is_ten_percent_owner,
+                        "dispositions": dispositions,
+                    })
+                continue
+            # Non-synthetic path (no filter or legacy)
             position_at_start_of_range = None
             first_period_end = None
             if not grp.empty:
@@ -302,22 +407,30 @@ def aggregates_monthly_quarterly(
                 n_10b5 = int((pg["is_10b5_1"] == True).sum()) if "is_10b5_1" in pg.columns else 0
                 n_total = len(pg)
                 period_10b5_1_status = "all" if n_total and n_10b5 == n_total else ("mixed" if n_10b5 else "none")
-                # One link per unique filing (xml_url); include both acquisitions and dispositions
-                seen_urls = set()
+                plan_adoption_date_val = None
+                if "plan_adoption_date" in pg.columns:
+                    non_null = pg["plan_adoption_date"].dropna()
+                    if len(non_null):
+                        plan_adoption_date_val = str(non_null.iloc[0])
+                is_margin_call_collateral_val = bool((pg["is_margin_call_collateral"] == True).any()) if "is_margin_call_collateral" in pg.columns else False
+                # Low-signal: RSU vest (M), tax withholding (F), gift (G), 10b5-1
+                tcode_col = pg.get("transaction_code") if "transaction_code" in pg.columns else None
+                has_rsu_vest = bool((tcode_col == "M").any()) if tcode_col is not None else False
+                has_tax_withholding = bool((tcode_col == "F").any()) if tcode_col is not None else False
+                has_gift = bool((tcode_col == "G").any()) if tcode_col is not None else False
+                first_row = pg.iloc[0] if not pg.empty else None
+                officer_title = first_row.get("officer_title") if first_row is not None and hasattr(first_row, "get") else None
+                is_ten_percent_owner = bool(first_row.get("is_ten_percent_owner", False)) if first_row is not None and hasattr(first_row, "get") else False
+                # One entry per filing (xml_url): sum shares from transactions in this period
                 dispositions = []
-                for _, row in pg.sort_values("transaction_date").iterrows():
-                    url = row.get("xml_url")
-                    if url and url in seen_urls:
-                        continue
-                    if url:
-                        seen_urls.add(url)
-                    d = row.get("transaction_date")
-                    td_str = d.isoformat()[:10] if hasattr(d, "isoformat") else str(d)[:10] if d else ""
-                    dispositions.append({
-                        "transaction_date": td_str,
-                        "shares": float(row.get("shares", 0)),
-                        "xml_url": url,
-                    })
+                if not pg.empty and "xml_url" in pg.columns:
+                    pg_sorted = pg.sort_values("transaction_date")
+                    for url in pg_sorted["xml_url"].dropna().unique():
+                        subset = pg_sorted[pg_sorted["xml_url"] == url]
+                        total_shares = float(subset["shares"].sum())
+                        first_d = subset.iloc[0].get("transaction_date")
+                        td_str = first_d.isoformat()[:10] if hasattr(first_d, "isoformat") else str(first_d)[:10] if first_d else ""
+                        dispositions.append({"transaction_date": td_str, "shares": total_shares, "xml_url": url})
                 results.append({
                     "insider_cik": insider_cik,
                     "insider_name": insider_name,
@@ -333,6 +446,13 @@ def aggregates_monthly_quarterly(
                     "pct_sold": pct_sold,
                     "pct_sold_label": pct_sold_label,
                     "period_10b5_1_status": period_10b5_1_status,
+                    "plan_adoption_date": plan_adoption_date_val,
+                    "is_margin_call_collateral": is_margin_call_collateral_val,
+                    "has_rsu_vest": has_rsu_vest,
+                    "has_tax_withholding": has_tax_withholding,
+                    "has_gift": has_gift,
+                    "officer_title": officer_title,
+                    "is_ten_percent_owner": is_ten_percent_owner,
                     "dispositions": dispositions,
                 })
         return results

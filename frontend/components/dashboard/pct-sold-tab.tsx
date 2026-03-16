@@ -18,33 +18,45 @@ export function PctSoldTab({
   aggregates,
   period,
   topInsiders = [],
-  filter10b5_1 = "all",
+  show10b5Columns = false,
 }: {
   aggregates: Aggregate[];
   period: "month" | "quarter";
   topInsiders?: TopInsider[];
-  filter10b5_1?: "all" | "only" | "exclude";
+  show10b5Columns?: boolean;
 }) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "shares_held_recent", desc: true }]);
   const [expandedInsiderCik, setExpandedInsiderCik] = useState<string | null>(null);
 
+  const filteredAggregates = aggregates;
+
   const changeByPeriod = useMemo(() => {
     const byPeriod: Record<string, number> = {};
-    for (const a of aggregates) {
+    for (const a of filteredAggregates) {
       if (a.change_shares == null) continue;
       byPeriod[a.period_end] = (byPeriod[a.period_end] ?? 0) + a.change_shares;
     }
     return Object.entries(byPeriod)
       .map(([period_end, change_shares]) => ({ period_end, change_shares }))
       .sort((a, b) => a.period_end.localeCompare(b.period_end));
-  }, [aggregates]);
+  }, [filteredAggregates]);
 
   const tableData = useMemo(() => {
     const byInsider: Record<
       string,
-      { insider_cik: string; insider_name: string; periods: number; net_change: number; net_value_change: number; insufficient: number; first_start_shares: number | null }
+      {
+        insider_cik: string;
+        insider_name: string;
+        periods: number;
+        net_change: number;
+        net_value_change: number;
+        insufficient: number;
+        first_start_shares: number | null;
+        officer_title: string | null;
+        is_ten_percent_owner: boolean;
+      }
     > = {};
-    for (const a of aggregates) {
+    for (const a of filteredAggregates) {
       const key = a.insider_cik;
       if (!byInsider[key])
         byInsider[key] = {
@@ -55,6 +67,8 @@ export function PctSoldTab({
           net_value_change: 0,
           insufficient: 0,
           first_start_shares: null,
+          officer_title: a.officer_title ?? null,
+          is_ten_percent_owner: a.is_ten_percent_owner ?? false,
         };
       byInsider[key].periods += 1;
       if (a.pct_sold_label === "insufficient data") {
@@ -68,10 +82,16 @@ export function PctSoldTab({
       byInsider[key].net_value_change += vb - vs;
     }
     for (const key of Object.keys(byInsider)) {
-      const insiderPeriods = aggregates.filter((a) => a.insider_cik === key).sort((a, b) => a.period_end.localeCompare(b.period_end));
+      const insiderPeriods = filteredAggregates.filter((a) => a.insider_cik === key).sort((a, b) => a.period_end.localeCompare(b.period_end));
       const first = insiderPeriods[0];
       if (first?.start_shares != null && first.start_shares > 0) {
         byInsider[key].first_start_shares = first.start_shares;
+      }
+      if (first && (byInsider[key].officer_title == null) && first.officer_title) {
+        byInsider[key].officer_title = first.officer_title;
+      }
+      if (first && first.is_ten_percent_owner) {
+        byInsider[key].is_ten_percent_owner = true;
       }
     }
     let rows = Object.values(byInsider).map((r) => ({
@@ -91,7 +111,7 @@ export function PctSoldTab({
       return rankA - rankB;
     });
     return rows;
-  }, [aggregates, topInsiders]);
+  }, [filteredAggregates, topInsiders]);
 
   const columns: ColumnDef<typeof tableData[0]>[] = useMemo(
     () => [
@@ -119,6 +139,25 @@ export function PctSoldTab({
         },
       },
       { id: "insider_name", header: "Insider", accessorFn: (r) => r.insider_name },
+      {
+        id: "officer_title",
+        header: "Title",
+        accessorFn: (r) => r.officer_title,
+        cell: ({ getValue }) => (getValue() as string | null) ?? "—",
+      },
+      {
+        id: "is_ten_percent_owner",
+        header: () => (
+          <span className="inline-flex items-center gap-1">
+            10% owner
+            <span title="Was a 10% beneficial owner before transaction (from Form 4)." className="text-muted-foreground cursor-help">
+              <HelpCircle className="h-3.5 w-3.5" />
+            </span>
+          </span>
+        ),
+        accessorFn: (r) => r.is_ten_percent_owner,
+        cell: ({ getValue }) => ((getValue() as boolean) ? "Yes" : "—"),
+      },
       {
         id: "shares_held_recent",
         header: "Shares held (recent)",
@@ -236,7 +275,7 @@ export function PctSoldTab({
           Change = acquired − sold (net). Listed by highest shareholders first. Sort by column headers (e.g. % change). Click a row to expand audit trail.
         </p>
         <p className="px-4 pb-4 text-xs text-muted-foreground">
-          <strong>Periods:</strong> Number of {period}s with activity. <strong>% change:</strong> Net change ÷ shares at start of first period. <strong>Insufficient data:</strong> Periods where start or end shares were missing.
+          <strong>Periods:</strong> Number of {period}s with activity. <strong>% change:</strong> Net change ÷ shares at start of first period. <strong>Insufficient data:</strong> Periods where start or end shares were missing. Use the transaction type filter above to change what is included.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -262,7 +301,7 @@ export function PctSoldTab({
               {table.getRowModel().rows.map((row) => {
                 const cik = row.original.insider_cik;
                 const isExpanded = expandedInsiderCik === cik;
-                const insiderAggregates = aggregates
+                const insiderAggregates = filteredAggregates
                   .filter((a) => a.insider_cik === cik)
                   .sort((a, b) => a.period_end.localeCompare(b.period_end));
                 return (
@@ -335,7 +374,7 @@ export function PctSoldTab({
                             })()}
                             <div>
                               <p className="px-4 py-2 text-xs font-medium text-muted-foreground border-b border-border">
-                                For each {period}: period start → end (selected range). Change = acquired − sold = End − Start. Filings link to SEC Form 4.
+                                For each {period}: period start → end (selected range). Change = acquired − sold = End − Start. Filings link to SEC Form 4. Use the transaction type filter above to restrict what is included.
                               </p>
                               <table className="w-full text-sm">
                               <thead>
@@ -344,9 +383,15 @@ export function PctSoldTab({
                                   <th className="px-4 py-2 text-left font-medium">Period end</th>
                                   <th className="px-4 py-2 text-right font-medium">Start shares</th>
                                   <th className="px-4 py-2 text-right font-medium">End shares</th>
+                                  <th className="px-4 py-2 text-right font-medium">% sold</th>
                                   <th className="px-4 py-2 text-right font-medium">Change</th>
                                   <th className="px-4 py-2 text-right font-medium">Value change (USD)</th>
-                                  <th className="px-4 py-2 text-center font-medium" title="Rule 10b5-1(c): All = all under plan; Mixed = some; None = none">10b5-1</th>
+                                  {show10b5Columns && (
+                                    <>
+                                      <th className="px-4 py-2 text-left font-medium">Adoption date (10b5-1)</th>
+                                      <th className="px-4 py-2 text-left font-medium">Margin call / collateral</th>
+                                    </>
+                                  )}
                                   <th className="px-4 py-2 text-left font-medium">Filings</th>
                                 </tr>
                               </thead>
@@ -357,6 +402,9 @@ export function PctSoldTab({
                                     <td className="px-4 py-2">{a.period_end}</td>
                                     <td className="px-4 py-2 text-right">{a.start_shares != null ? formatNumber(a.start_shares) : "—"}</td>
                                     <td className="px-4 py-2 text-right">{a.end_shares != null ? formatNumber(a.end_shares) : "—"}</td>
+                                    <td className="px-4 py-2 text-right">
+                                      {a.pct_sold != null ? `${(a.pct_sold * 100).toFixed(2)}%` : "—"}
+                                    </td>
                                     <td className="px-4 py-2 text-right">
                                       {a.change_shares != null ? (
                                         <span className={a.change_shares >= 0 ? "text-green-600" : "text-red-600"}>
@@ -379,30 +427,25 @@ export function PctSoldTab({
                                         );
                                       })()}
                                     </td>
-                                    <td className="px-4 py-2 text-center" title={a.period_10b5_1_status === "all" ? "All transactions in this period under Rule 10b5-1(c) plan" : a.period_10b5_1_status === "mixed" ? "Some transactions under 10b5-1 plan" : "No 10b5-1 transactions in this period"}>
-                                      {a.period_10b5_1_status === "all" ? (
-                                        <span className="rounded bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">All</span>
-                                      ) : a.period_10b5_1_status === "mixed" ? (
-                                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Mixed</span>
-                                      ) : a.period_10b5_1_status === "none" ? (
-                                        <span className="text-muted-foreground text-xs">None</span>
-                                      ) : (
-                                        "—"
-                                      )}
-                                    </td>
-                                    <td className="px-4 py-2">
+                                    {show10b5Columns && (
+                                      <>
+                                        <td className="px-4 py-2">{a.plan_adoption_date ?? "—"}</td>
+                                        <td className="px-4 py-2">{a.is_margin_call_collateral ? "Yes" : "—"}</td>
+                                      </>
+                                    )}
+                                    <td className="px-4 py-2 align-top">
                                       {a.dispositions && a.dispositions.length > 0 ? (
-                                        <ul className="flex flex-wrap gap-2">
+                                        <ul className="flex flex-col gap-0.5 max-h-24 overflow-y-auto pr-1">
                                           {a.dispositions.map((d, j) => (
-                                            <li key={j}>
+                                            <li key={j} className="flex items-center gap-1">
                                               <a
                                                 href={d.xml_url ?? "#"}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
-                                                className="inline-flex items-center gap-1 text-primary hover:underline"
+                                                className="inline-flex items-center gap-1 text-primary hover:underline text-xs"
                                                 onClick={(e) => e.stopPropagation()}
                                               >
-                                                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                                                <ExternalLink className="h-3 w-3 shrink-0" />
                                                 {d.transaction_date}
                                               </a>
                                             </li>

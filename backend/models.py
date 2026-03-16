@@ -27,7 +27,7 @@ class Filing(SQLModel, table=True):
     filing_date: date
     xml_url: Optional[str] = None
     is_amendment: bool = False
-    is_10b5_1: Optional[bool] = None  # Form-level: Rule 10b5-1(c) plan for this filing (one value per form)
+    is_10b5_1: Optional[bool] = None  # True if at least one transaction in this filing is 10b5-1
 
 
 class Transaction(SQLModel, table=True):
@@ -39,6 +39,7 @@ class Transaction(SQLModel, table=True):
     insider_name: str
     is_director: bool = False
     is_officer: bool = False
+    is_ten_percent_owner: Optional[bool] = None  # 10% owner before transaction (from Form 4)
     officer_title: Optional[str] = None
     security_title: Optional[str] = None
     transaction_date: date
@@ -48,5 +49,12 @@ class Transaction(SQLModel, table=True):
     price: Optional[float] = None
     value_usd: Optional[float] = None
     shares_owned_following: Optional[float] = None
-    is_10b5_1: Optional[bool] = None  # Denormalized from Filing (form-level); same for all txns in one form
+    is_10b5_1: Optional[bool] = None  # Per-transaction: from footnote 10b5-1
+    plan_adoption_date: Optional[str] = None  # 10b5-1 plan adoption date (ISO YYYY-MM-DD) from footnote
+    is_margin_call_collateral: Optional[bool] = None  # Sale due to margin call/collateral from footnote
+    is_rsu_vest_related: Optional[bool] = None
+    is_tax_withholding: Optional[bool] = None
+    is_gift: Optional[bool] = None
+    classification_confidence: Optional[str] = None  # high | medium | low
+    classification_reasoning: Optional[str] = None
     xml_url: Optional[str] = None
