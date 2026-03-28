@@ -74,6 +74,52 @@ export type InsiderActivityPoint = {
   value_sold_usd: number | null;
 };
 
+export type InsiderSummaryRow = {
+  insider_cik: string;
+  insider_name: string;
+  officer_title: string | null;
+  is_director: boolean;
+  is_officer: boolean;
+  is_ten_percent_owner: boolean;
+  bop_shares: number | null;
+  eop_shares: number | null;
+  pct_owner_post_sales: number | null;
+  buys_usd: number;
+  buys_shares: number;
+  avg_cost_basis_buys: number | null;
+  purchases_pct_bop: number | null;
+  sales_total_usd: number;
+  sales_core_usd: number;
+  sales_core_shares: number;
+  avg_cost_basis_core_sales: number | null;
+  sales_pct_bop: number | null;
+  sales_non_core_usd: number;
+  sales_non_core_pct_total: number | null;
+  net_buyer_or_seller: "Buyer" | "Seller" | "Neutral";
+};
+
+export type ClusterPeriod = {
+  period: string;
+  sellers: string[];
+};
+
+export type InsiderSummaryResponse = {
+  ticker: string;
+  lookback_days: number;
+  insiders: InsiderSummaryRow[];
+  cluster_periods: ClusterPeriod[];
+};
+
+export async function fetchInsiderSummary(
+  ticker: string,
+  lookback_days: number,
+): Promise<InsiderSummaryResponse> {
+  const params = new URLSearchParams({ lookback_days: String(lookback_days) });
+  const res = await fetch(`${API_URL}/api/${encodeURIComponent(ticker)}/insider-summary?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch insider summary");
+  return res.json();
+}
+
 export async function fetchDefaultCompanies(): Promise<{ companies: DefaultCompany[] }> {
   const res = await fetch(`${API_URL}/api/default-companies`);
   if (!res.ok) throw new Error("Failed to fetch default companies");

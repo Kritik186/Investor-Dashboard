@@ -1,5 +1,6 @@
-"""Business logic: top 15 insiders, holdings over time, monthly/quarterly aggregations."""
+"""Business logic: top 15 insiders, holdings over time, monthly/quarterly aggregations, insider summary."""
 
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -464,3 +465,178 @@ def aggregates_monthly_quarterly(
         return results
     except Exception:
         return []
+
+
+def _is_core_transaction(t: dict) -> bool:
+    """Core = open-market P or S with none of the classification flags set."""
+    code = (t.get("transaction_code") or "").strip().upper()
+    if code not in ("P", "S"):
+        return False
+    if t.get("is_10b5_1") is True:
+        return False
+    if t.get("is_rsu_vest_related") is True:
+        return False
+    if t.get("is_tax_withholding") is True:
+        return False
+    if t.get("is_gift") is True:
+        return False
+    return True
+
+
+def insider_summary(
+    transactions: list[dict],
+    lookback_days: int = 365,
+) -> dict:
+    """
+    Build the insider summary table data: one row per insider (top 15 by shares held),
+    with core/non-core splits, BoP/EoP, and cluster detection.
+    Returns {"insiders": [...], "cluster_periods": [...]}.
+    """
+    if not transactions:
+        return {"insiders": [], "cluster_periods": []}
+
+    top = top_15_insiders(transactions, lookback_days=lookback_days)
+    if not top:
+        return {"insiders": [], "cluster_periods": []}
+
+    top_ciks = {r["insider_cik"] for r in top}
+    cutoff = (date.today() - timedelta(days=lookback_days)) if lookback_days else None
+
+    filtered: list[dict] = []
+    for t in transactions:
+        if t.get("insider_cik") not in top_ciks:
+            continue
+        td = _parse_d(t.get("transaction_date"))
+        if not td or (cutoff and td < cutoff):
+            continue
+        filtered.append({**t, "_td": td})
+
+    if not filtered:
+        return {"insiders": [], "cluster_periods": []}
+
+    by_insider: dict[str, list[dict]] = defaultdict(list)
+    for t in filtered:
+        by_insider[t["insider_cik"]].append(t)
+
+    seller_months: dict[str, dict[str, str]] = defaultdict(dict)  # month -> {cik: name}
+
+    insiders_out = []
+    for top_row in top:
+        cik = top_row["insider_cik"]
+        name = top_row["insider_name"]
+        txns = sorted(by_insider.get(cik, []), key=lambda x: (x["_td"], x.get("id") or 0))
+        if not txns:
+            continue
+
+        first = txns[0]
+        following_first = first.get("shares_owned_following")
+        sh_first = float(first.get("shares") or 0)
+        acq_first = (first.get("acq_disp") or "").upper()
+        bop_shares: float | None = None
+        if following_first is not None:
+            bop_shares = float(following_first) + sh_first if acq_first == "D" else float(following_first) - sh_first
+
+        last = txns[-1]
+        eop_shares = float(last["shares_owned_following"]) if last.get("shares_owned_following") is not None else None
+
+        officer_title = None
+        is_director = False
+        is_officer = False
+        is_ten_percent_owner = False
+        for t in txns:
+            if t.get("officer_title"):
+                officer_title = t["officer_title"]
+            if t.get("is_director"):
+                is_director = True
+            if t.get("is_officer"):
+                is_officer = True
+            if t.get("is_ten_percent_owner"):
+                is_ten_percent_owner = True
+
+        buys_usd = 0.0
+        buys_shares = 0.0
+        sales_total_usd = 0.0
+        sales_total_shares = 0.0
+        sales_core_usd = 0.0
+        sales_core_shares = 0.0
+        sales_non_core_usd = 0.0
+        buys_core_usd = 0.0
+        buys_core_shares = 0.0
+
+        for t in txns:
+            acq = (t.get("acq_disp") or "").upper()
+            shares = float(t.get("shares") or 0)
+            value = t.get("value_usd")
+            if value is None and t.get("price") is not None:
+                try:
+                    value = shares * float(t["price"])
+                except (TypeError, ValueError):
+                    value = None
+            val = float(value) if value is not None else 0.0
+            core = _is_core_transaction(t)
+
+            if acq == "A":
+                buys_usd += val
+                buys_shares += shares
+                if core:
+                    buys_core_usd += val
+                    buys_core_shares += shares
+            elif acq == "D":
+                sales_total_usd += val
+                sales_total_shares += shares
+                month_key = t["_td"].strftime("%Y-%m")
+                seller_months[month_key][cik] = name
+                if core:
+                    sales_core_usd += val
+                    sales_core_shares += shares
+                else:
+                    sales_non_core_usd += val
+
+        avg_cost_buys = buys_usd / buys_shares if buys_shares else None
+        avg_cost_core_sales = sales_core_usd / sales_core_shares if sales_core_shares else None
+        purchases_pct_bop = buys_shares / bop_shares if bop_shares and bop_shares > 0 else None
+        sales_pct_bop = sales_core_shares / bop_shares if bop_shares and bop_shares > 0 else None
+        sales_non_core_pct = sales_non_core_usd / sales_total_usd if sales_total_usd > 0 else None
+
+        net_core = buys_core_usd - sales_core_usd
+        if net_core > 0:
+            net_label = "Buyer"
+        elif net_core < 0:
+            net_label = "Seller"
+        else:
+            net_label = "Neutral"
+
+        insiders_out.append({
+            "insider_cik": cik,
+            "insider_name": name,
+            "officer_title": officer_title,
+            "is_director": is_director,
+            "is_officer": is_officer,
+            "is_ten_percent_owner": is_ten_percent_owner,
+            "bop_shares": bop_shares,
+            "eop_shares": eop_shares,
+            "pct_owner_post_sales": None,
+            "buys_usd": buys_usd,
+            "buys_shares": buys_shares,
+            "avg_cost_basis_buys": avg_cost_buys,
+            "purchases_pct_bop": purchases_pct_bop,
+            "sales_total_usd": sales_total_usd,
+            "sales_core_usd": sales_core_usd,
+            "sales_core_shares": sales_core_shares,
+            "avg_cost_basis_core_sales": avg_cost_core_sales,
+            "sales_pct_bop": sales_pct_bop,
+            "sales_non_core_usd": sales_non_core_usd,
+            "sales_non_core_pct_total": sales_non_core_pct,
+            "net_buyer_or_seller": net_label,
+        })
+
+    cluster_periods = sorted(
+        [
+            {"period": m, "sellers": sorted(cik_names.values())}
+            for m, cik_names in seller_months.items()
+            if len(cik_names) >= 3
+        ],
+        key=lambda x: x["period"],
+    )
+
+    return {"insiders": insiders_out, "cluster_periods": cluster_periods}

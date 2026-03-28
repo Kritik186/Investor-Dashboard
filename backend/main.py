@@ -23,7 +23,7 @@ from config import DEFAULT_COMPANY_LABELS, DEFAULT_TICKERS
 from models import Company, Filing, Insider, Transaction
 from parser import fetch_and_parse_form4
 from sec_client import get_company_submissions, resolve_ticker_to_cik
-from transforms import aggregates_monthly_quarterly, holdings_over_time, insider_activity_over_time, top_15_insiders
+from transforms import aggregates_monthly_quarterly, holdings_over_time, insider_activity_over_time, insider_summary, top_15_insiders
 
 # DB — use InsiderDB for PostgreSQL (create database first: CREATE DATABASE "InsiderDB";)
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./insider.db")
@@ -464,6 +464,26 @@ def get_top(
     # Always use unfiltered transactions for top/shares held so the number does not change with type filter
     top = top_15_insiders(txns_dict, lookback_days=lookback_days)
     return {"ticker": ticker, "lookback_days": lookback_days, "top_insiders": top}
+
+
+@app.get("/api/{ticker}/insider-summary")
+def get_insider_summary(
+    ticker: str,
+    lookback_days: int = Query(365, alias="lookback_days"),
+):
+    """Insider summary table: one row per insider (top 15) with core/non-core splits and cluster detection."""
+    ticker = ticker.upper()
+    with Session(engine) as session:
+        company = session.get(Company, ticker)
+        if not company:
+            return {"ticker": ticker, "lookback_days": lookback_days, "insiders": [], "cluster_periods": []}
+        stmt = select(Transaction).where(Transaction.company_cik == company.cik10)
+        txns = list(session.exec(stmt))
+    txns_dict = [_txn_to_dict(t) for t in txns]
+    for d in txns_dict:
+        d["transaction_date"] = d["transaction_date"][:10] if d.get("transaction_date") else None
+    result = insider_summary(txns_dict, lookback_days=lookback_days)
+    return {"ticker": ticker, "lookback_days": lookback_days, **result}
 
 
 @app.get("/api/{ticker}/holdings")

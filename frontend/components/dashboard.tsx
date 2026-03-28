@@ -18,9 +18,11 @@ import {
   fetchAggregates,
   fetchTransactions,
   fetchDefaultCompanies,
+  fetchInsiderSummary,
   deleteCompany,
   type Kpis,
   type DefaultCompany,
+  type InsiderSummaryRow,
 } from "@/lib/api";
 
 /** Transaction type filter: open market + sale-type (RSU vest, tax withholding, gift, 10b5-1). */
@@ -33,7 +35,8 @@ const TRANSACTION_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "10b5-1", label: "10b5-1" },
 ];
 import { formatCurrency, formatNumber, formatDate } from "@/lib/utils";
-import { HoldingsChart } from "@/components/dashboard/holdings-chart";
+import { InsiderSummaryTable } from "@/components/dashboard/insider-summary-table";
+import { InsiderDetailModal } from "@/components/dashboard/insider-detail-modal";
 import { PctSoldTab } from "@/components/dashboard/pct-sold-tab";
 import { TransactionsTable } from "@/components/dashboard/transactions-table";
 
@@ -134,6 +137,10 @@ export function Dashboard() {
   const [syncProgress, setSyncProgress] = useState<string>("");
   const [isBackfilling, setIsBackfilling] = useState(false);
   const [deletingTicker, setDeletingTicker] = useState<string | null>(null);
+  const [coreSalesOnly, setCoreSalesOnly] = useState(false);
+  const [tenPctOnly, setTenPctOnly] = useState(false);
+  const [modalInsider, setModalInsider] = useState<InsiderSummaryRow | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
   const queryClient = useQueryClient();
   const customDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -166,6 +173,7 @@ export function Dashboard() {
     queryClient.invalidateQueries({ queryKey: ["top", ticker] });
     queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
     queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
+    queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
   }, [lookbackDays, ticker, transactionFilter, queryClient]);
 
   // Auto-sync when company changes so data flows without clicking Refresh; show progress
@@ -182,6 +190,7 @@ export function Dashboard() {
           queryClient.invalidateQueries({ queryKey: ["top", ticker] });
           queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
           queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
+          queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
         }
       })
       .catch(() => { /* ignore; user can click Refresh */ })
@@ -226,6 +235,7 @@ export function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["top", ticker] });
       queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
       queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
+      queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
     } catch (e) {
       showToast("Refresh failed", (e as Error).message);
     } finally {
@@ -255,6 +265,7 @@ export function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["top", ticker] });
       queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
       queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
+      queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
     } catch (e) {
       showToast("Backfill failed", (e as Error).message);
     } finally {
@@ -304,6 +315,12 @@ export function Dashboard() {
   const { data: topData } = useQuery({
     queryKey: ["top", ticker, lookbackDays, transactionFilter],
     queryFn: () => fetchTop(ticker!, lookbackDays, transactionFilter),
+    enabled: !!ticker,
+  });
+
+  const { data: insiderSummaryData } = useQuery({
+    queryKey: ["insider-summary", ticker, lookbackDays],
+    queryFn: () => fetchInsiderSummary(ticker!, lookbackDays),
     enabled: !!ticker,
   });
 
@@ -594,12 +611,25 @@ export function Dashboard() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="holdings" className="space-y-4">
-              <HoldingsChart
+              <InsiderSummaryTable
+                insiders={insiderSummaryData?.insiders ?? []}
+                clusterPeriods={insiderSummaryData?.cluster_periods ?? []}
+                coreSalesOnly={coreSalesOnly}
+                tenPctOnly={tenPctOnly}
+                onCoreSalesToggle={() => setCoreSalesOnly((v) => !v)}
+                onTenPctToggle={() => setTenPctOnly((v) => !v)}
+                onInsiderClick={(insider) => {
+                  setModalInsider(insider);
+                  setModalOpen(true);
+                }}
+              />
+              <InsiderDetailModal
+                insider={modalInsider}
                 ticker={ticker!}
                 lookbackDays={lookbackDays}
-                period={period}
-                topInsiders={topData?.top_insiders ?? []}
-                transactionFilter={transactionFilter}
+                coreSalesOnly={coreSalesOnly}
+                open={modalOpen}
+                onOpenChange={setModalOpen}
               />
             </TabsContent>
             <TabsContent value="pct-sold" className="space-y-4">
