@@ -18,8 +18,8 @@ import {
   Cell,
   ReferenceLine,
 } from "recharts";
-import type { InsiderSummaryRow, Transaction } from "@/lib/api";
-import { fetchTransactions } from "@/lib/api";
+import type { InsiderSummaryRow, Transaction, StockPricePoint } from "@/lib/api";
+import { fetchTransactions, fetchStockPrices } from "@/lib/api";
 import { formatCurrency, formatNumber } from "@/lib/utils";
 
 type ChartView = "sales" | "waterfall";
@@ -40,6 +40,7 @@ type SalesChartPoint = {
   coreSalesUsd: number;
   nonCoreSalesUsd: number;
   pctSold: number | null;
+  stockPrice: number | null;
 };
 
 type WaterfallPoint = {
@@ -52,6 +53,7 @@ type WaterfallPoint = {
 function buildSalesData(
   transactions: Transaction[],
   coreSalesOnly: boolean,
+  stockPrices: StockPricePoint[] = [],
 ): SalesChartPoint[] {
   const byMonth = new Map<string, { coreSold: number; nonCoreSold: number }>();
 
@@ -83,6 +85,11 @@ function buildSalesData(
     }
   }
 
+  const priceByMonth = new Map<string, number>();
+  for (const sp of stockPrices) {
+    priceByMonth.set(sp.date.slice(0, 7), sp.close);
+  }
+
   const points: SalesChartPoint[] = [];
   for (const [month, data] of Array.from(byMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
     const coreUsd = data.coreSold;
@@ -99,6 +106,7 @@ function buildSalesData(
       coreSalesUsd: coreUsd,
       nonCoreSalesUsd: nonCoreUsd,
       pctSold: pct,
+      stockPrice: priceByMonth.get(month) ?? null,
     });
   }
   return points;
@@ -162,11 +170,19 @@ export function InsiderDetailModal({
     enabled: open && !!insider,
   });
 
+  const { data: stockData } = useQuery({
+    queryKey: ["stock-prices", ticker, lookbackDays],
+    queryFn: () => fetchStockPrices(ticker, lookbackDays),
+    enabled: open && !!insider,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const transactions = txnData?.transactions ?? [];
+  const stockPrices = stockData?.prices ?? [];
 
   const salesChartData = useMemo(
-    () => (transactions.length > 0 ? buildSalesData(transactions, coreSalesOnly) : []),
-    [transactions, coreSalesOnly]
+    () => (transactions.length > 0 ? buildSalesData(transactions, coreSalesOnly, stockPrices) : []),
+    [transactions, coreSalesOnly, stockPrices]
   );
 
   const waterfallData = useMemo(
@@ -248,13 +264,28 @@ export function InsiderDetailModal({
                       tick={{ fontSize: 11 }}
                       tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
                     />
+                    <YAxis yAxisId="price" orientation="right" hide />
                     <Tooltip
                       formatter={(value: number, name: string) => {
                         if (name === "% Holdings Sold") return [`${(value * 100).toFixed(2)}%`, name];
+                        if (name === "Stock Price") return [`$${value.toFixed(2)}`, name];
                         return [formatCurrency(value), name];
                       }}
                     />
                     <Legend />
+                    {salesChartData.some((d) => d.stockPrice != null) && (
+                      <Line
+                        yAxisId="price"
+                        type="monotone"
+                        dataKey="stockPrice"
+                        name="Stock Price"
+                        stroke="hsl(217, 91%, 60%)"
+                        strokeWidth={1.5}
+                        strokeDasharray="5 3"
+                        dot={{ r: 3 }}
+                        connectNulls
+                      />
+                    )}
                     <Bar
                       yAxisId="left"
                       dataKey="coreSalesUsd"

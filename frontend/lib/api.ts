@@ -110,6 +110,18 @@ export type InsiderSummaryResponse = {
   cluster_periods: ClusterPeriod[];
 };
 
+export type StockPricePoint = { date: string; close: number };
+
+export async function fetchStockPrices(
+  ticker: string,
+  lookback_days: number,
+): Promise<{ ticker: string; prices: StockPricePoint[] }> {
+  const params = new URLSearchParams({ lookback_days: String(lookback_days) });
+  const res = await fetch(`${API_URL}/api/${encodeURIComponent(ticker)}/stock-prices?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch stock prices");
+  return res.json();
+}
+
 export async function fetchInsiderSummary(
   ticker: string,
   lookback_days: number,

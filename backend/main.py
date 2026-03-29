@@ -832,6 +832,46 @@ def get_kpis(
     }
 
 
+@app.get("/api/{ticker}/stock-prices")
+def get_stock_prices(
+    ticker: str,
+    lookback_days: int = Query(365, alias="lookback_days"),
+):
+    """Monthly closing stock prices via Yahoo Finance chart API for chart overlay."""
+    import math
+    from zoneinfo import ZoneInfo
+
+    ticker = ticker.upper()
+    try:
+        import httpx
+
+        start_ts = int(datetime.combine(date.today() - timedelta(days=lookback_days), datetime.min.time()).timestamp())
+        end_ts = int(datetime.combine(date.today(), datetime.min.time()).timestamp())
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+            f"?period1={start_ts}&period2={end_ts}&interval=1mo&includeAdjustedClose=true"
+        )
+        resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("chart", {}).get("result")
+        if not result:
+            return {"ticker": ticker, "prices": []}
+        timestamps = result[0].get("timestamp") or []
+        closes = (result[0].get("indicators", {}).get("adjclose") or [{}])[0].get("adjclose") or []
+        if not closes:
+            closes = (result[0].get("indicators", {}).get("quote") or [{}])[0].get("close") or []
+        prices = []
+        for ts, c in zip(timestamps, closes):
+            if c is None or (isinstance(c, float) and math.isnan(c)):
+                continue
+            d = datetime.fromtimestamp(ts, tz=ZoneInfo("UTC")).date()
+            prices.append({"date": d.isoformat()[:10], "close": round(float(c), 2)})
+        return {"ticker": ticker, "prices": prices}
+    except Exception as e:
+        return {"ticker": ticker, "prices": [], "error": str(e)}
+
+
 @app.get("/")
 def root():
     return {"message": "Insider Dashboard API", "docs": "/docs"}
