@@ -560,6 +560,7 @@ def insider_summary(
         sales_core_usd = 0.0
         sales_core_shares = 0.0
         sales_non_core_usd = 0.0
+        sales_non_core_shares = 0.0
         buys_core_usd = 0.0
         buys_core_shares = 0.0
 
@@ -591,11 +592,12 @@ def insider_summary(
                     sales_core_shares += shares
                 else:
                     sales_non_core_usd += val
+                    sales_non_core_shares += shares
 
         avg_cost_buys = buys_usd / buys_shares if buys_shares else None
         avg_cost_core_sales = sales_core_usd / sales_core_shares if sales_core_shares else None
         purchases_pct_bop = buys_shares / bop_shares if bop_shares and bop_shares > 0 else None
-        sales_pct_bop = sales_core_shares / bop_shares if bop_shares and bop_shares > 0 else None
+        sales_pct_bop = sales_total_shares / bop_shares if bop_shares and bop_shares > 0 else None
         sales_non_core_pct = sales_non_core_usd / sales_total_usd if sales_total_usd > 0 else None
 
         net_core = buys_core_usd - sales_core_usd
@@ -615,20 +617,33 @@ def insider_summary(
             "is_ten_percent_owner": is_ten_percent_owner,
             "bop_shares": bop_shares,
             "eop_shares": eop_shares,
-            "pct_owner_post_sales": None,
+            "pct_owner_post_sales": None,  # computed after loop
             "buys_usd": buys_usd,
             "buys_shares": buys_shares,
+            "buys_core_shares": buys_core_shares,
+            "buys_non_core_shares": buys_shares - buys_core_shares,
             "avg_cost_basis_buys": avg_cost_buys,
             "purchases_pct_bop": purchases_pct_bop,
             "sales_total_usd": sales_total_usd,
+            "sales_total_shares": sales_total_shares,
             "sales_core_usd": sales_core_usd,
             "sales_core_shares": sales_core_shares,
             "avg_cost_basis_core_sales": avg_cost_core_sales,
             "sales_pct_bop": sales_pct_bop,
             "sales_non_core_usd": sales_non_core_usd,
+            "sales_non_core_shares": sales_non_core_shares,
             "sales_non_core_pct_total": sales_non_core_pct,
             "net_buyer_or_seller": net_label,
         })
+
+    total_eop = sum(r.get("eop_shares") or 0 for r in insiders_out)
+    if total_eop > 0:
+        for r in insiders_out:
+            eop = r.get("eop_shares") or 0
+            r["pct_owner_post_sales"] = eop / total_eop if eop else 0.0
+    else:
+        for r in insiders_out:
+            r["pct_owner_post_sales"] = None
 
     cluster_periods = sorted(
         [

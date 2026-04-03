@@ -86,14 +86,18 @@ export type InsiderSummaryRow = {
   pct_owner_post_sales: number | null;
   buys_usd: number;
   buys_shares: number;
+  buys_core_shares: number;
+  buys_non_core_shares: number;
   avg_cost_basis_buys: number | null;
   purchases_pct_bop: number | null;
   sales_total_usd: number;
+  sales_total_shares: number;
   sales_core_usd: number;
   sales_core_shares: number;
   avg_cost_basis_core_sales: number | null;
   sales_pct_bop: number | null;
   sales_non_core_usd: number;
+  sales_non_core_shares: number;
   sales_non_core_pct_total: number | null;
   net_buyer_or_seller: "Buyer" | "Seller" | "Neutral";
 };

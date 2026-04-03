@@ -21,12 +21,14 @@ function fmtPct(v: number | null | undefined): string {
 }
 
 function fmtCurrency(v: number | null | undefined): string {
-  if (v == null || v === 0) return "—";
+  if (v == null) return "—";
+  if (v === 0) return "$0";
   return formatCurrency(v);
 }
 
 function fmtShares(v: number | null | undefined): string {
-  if (v == null || v === 0) return "—";
+  if (v == null) return "—";
+  if (v === 0) return "0";
   return formatNumber(v);
 }
 
@@ -109,7 +111,7 @@ export function InsiderSummaryTable({
       col.accessor("pct_owner_post_sales", {
         header: ({ column }) => (
           <button type="button" onClick={column.getToggleSortingHandler()} className="cursor-pointer select-none">
-            <SortHeader label="% Owner Post-Sales" sorted={column.getIsSorted()} />
+            <SortHeader label="% EoP (of Top 15)" sorted={column.getIsSorted()} />
           </button>
         ),
         cell: (info) => (info.getValue() != null ? fmtPct(info.getValue()) : "N/A"),

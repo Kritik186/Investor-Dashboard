@@ -127,7 +127,8 @@ export function Dashboard() {
   const [addToListPrompt, setAddToListPrompt] = useState<{ ticker: string; label: string } | null>(null);
   const [lookbackDays, setLookbackDays] = useState(365);
   const [isCustomMode, setIsCustomMode] = useState(false);
-  const [customInputStr, setCustomInputStr] = useState("30"); // string so user can type/clear freely
+  const [customInputStr, setCustomInputStr] = useState("30");
+  const [customUnit, setCustomUnit] = useState<"days" | "months" | "years">("days");
   const [period, setPeriod] = useState<"month" | "quarter">("month");
   const [selectedTransactionTypes, setSelectedTransactionTypes] = useState<string[]>([]);
   const [transactionTypesOpen, setTransactionTypesOpen] = useState(false);
@@ -139,27 +140,31 @@ export function Dashboard() {
   const [deletingTicker, setDeletingTicker] = useState<string | null>(null);
   const [coreSalesOnly, setCoreSalesOnly] = useState(false);
   const [tenPctOnly, setTenPctOnly] = useState(false);
-  const [modalInsider, setModalInsider] = useState<InsiderSummaryRow | null>(null);
+  const [modalInsiderCik, setModalInsiderCik] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const queryClient = useQueryClient();
   const customDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Commit custom days to lookbackDays after user stops typing (so lookback APIs refetch once and dashboard updates)
+  const unitToDays = (value: number, unit: "days" | "months" | "years") =>
+    unit === "years" ? value * 365 : unit === "months" ? value * 30 : value;
+  const unitMax = customUnit === "years" ? 10 : customUnit === "months" ? 120 : LOOKBACK_MAX;
+  const unitMin = 1;
+
   const showCustomInput = isCustomMode || !isPreset(lookbackDays);
   useEffect(() => {
     if (!showCustomInput) return;
     const n = parseInt(customInputStr, 10);
-    if (Number.isNaN(n)) return;
-    const clamped = Math.max(LOOKBACK_MIN, Math.min(LOOKBACK_MAX, n));
+    if (Number.isNaN(n) || n < 1) return;
+    const days = Math.max(LOOKBACK_MIN, Math.min(LOOKBACK_MAX, unitToDays(n, customUnit)));
     if (customDebounceRef.current) clearTimeout(customDebounceRef.current);
     customDebounceRef.current = setTimeout(() => {
       customDebounceRef.current = null;
-      setLookbackDays(clamped);
+      setLookbackDays(days);
     }, 500);
     return () => {
       if (customDebounceRef.current) clearTimeout(customDebounceRef.current);
     };
-  }, [customInputStr, showCustomInput]);
+  }, [customInputStr, customUnit, showCustomInput]);
 
   const transactionFilter = useMemo(
     () => ({ transaction_types: selectedTransactionTypes }),
@@ -174,6 +179,8 @@ export function Dashboard() {
     queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
     queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
     queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
+    queryClient.invalidateQueries({ queryKey: ["modal-transactions"] });
+    queryClient.invalidateQueries({ queryKey: ["stock-prices", ticker] });
   }, [lookbackDays, ticker, transactionFilter, queryClient]);
 
   // Auto-sync when company changes so data flows without clicking Refresh; show progress
@@ -191,6 +198,8 @@ export function Dashboard() {
           queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
           queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
           queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
+          queryClient.invalidateQueries({ queryKey: ["modal-transactions"] });
+          queryClient.invalidateQueries({ queryKey: ["stock-prices", ticker] });
         }
       })
       .catch(() => { /* ignore; user can click Refresh */ })
@@ -236,6 +245,8 @@ export function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
       queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
       queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
+      queryClient.invalidateQueries({ queryKey: ["modal-transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["stock-prices", ticker] });
     } catch (e) {
       showToast("Refresh failed", (e as Error).message);
     } finally {
@@ -266,6 +277,8 @@ export function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["aggregates", ticker] });
       queryClient.invalidateQueries({ queryKey: ["transactions", ticker] });
       queryClient.invalidateQueries({ queryKey: ["insider-summary", ticker] });
+      queryClient.invalidateQueries({ queryKey: ["modal-transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["stock-prices", ticker] });
     } catch (e) {
       showToast("Backfill failed", (e as Error).message);
     } finally {
@@ -323,6 +336,11 @@ export function Dashboard() {
     queryFn: () => fetchInsiderSummary(ticker!, lookbackDays),
     enabled: !!ticker,
   });
+
+  const modalInsider = useMemo(
+    () => (insiderSummaryData?.insiders ?? []).find((i) => i.insider_cik === modalInsiderCik) ?? null,
+    [insiderSummaryData, modalInsiderCik]
+  );
 
   const { data: aggregatesData } = useQuery({
     queryKey: ["aggregates", ticker, lookbackDays, period, selectedTransactionTypes],
@@ -456,6 +474,7 @@ export function Dashboard() {
                 const v = e.target.value;
                 if (v === "custom") {
                   setIsCustomMode(true);
+                  setCustomUnit("days");
                   setCustomInputStr(String(lookbackDays));
                 } else {
                   setIsCustomMode(false);
@@ -473,18 +492,18 @@ export function Dashboard() {
               <div className="flex items-center gap-1">
                 <Input
                   type="number"
-                  min={LOOKBACK_MIN}
-                  max={LOOKBACK_MAX}
-                  placeholder={`${LOOKBACK_MIN}-${LOOKBACK_MAX}`}
+                  min={unitMin}
+                  max={unitMax}
+                  placeholder={`${unitMin}-${unitMax}`}
                   value={customInputStr}
                   onChange={(e) => setCustomInputStr(e.target.value)}
                   onBlur={() => {
                     const n = parseInt(customInputStr, 10);
-                    const clamped = Number.isNaN(n) || n < LOOKBACK_MIN || n > LOOKBACK_MAX
-                      ? Math.max(LOOKBACK_MIN, Math.min(LOOKBACK_MAX, lookbackDays))
-                      : Math.max(LOOKBACK_MIN, Math.min(LOOKBACK_MAX, n));
-                    setLookbackDays(clamped);
+                    const clamped = Number.isNaN(n) || n < unitMin || n > unitMax
+                      ? Math.max(unitMin, Math.min(unitMax, Math.round(lookbackDays / (customUnit === "years" ? 365 : customUnit === "months" ? 30 : 1))))
+                      : Math.max(unitMin, Math.min(unitMax, n));
                     setCustomInputStr(String(clamped));
+                    setLookbackDays(Math.max(LOOKBACK_MIN, Math.min(LOOKBACK_MAX, unitToDays(clamped, customUnit))));
                     if (customDebounceRef.current) {
                       clearTimeout(customDebounceRef.current);
                       customDebounceRef.current = null;
@@ -492,7 +511,22 @@ export function Dashboard() {
                   }}
                   className="w-16 h-10 text-center"
                 />
-                <span className="text-sm text-muted-foreground">days</span>
+                <Select
+                  value={customUnit}
+                  onChange={(e) => {
+                    const unit = e.target.value as "days" | "months" | "years";
+                    setCustomUnit(unit);
+                    const n = parseInt(customInputStr, 10);
+                    if (!Number.isNaN(n) && n >= 1) {
+                      setLookbackDays(Math.max(LOOKBACK_MIN, Math.min(LOOKBACK_MAX, unitToDays(n, unit))));
+                    }
+                  }}
+                  className="w-24 h-10"
+                >
+                  <option value="days">Days</option>
+                  <option value="months">Months</option>
+                  <option value="years">Years</option>
+                </Select>
               </div>
             )}
           </div>
@@ -619,7 +653,7 @@ export function Dashboard() {
                 onCoreSalesToggle={() => setCoreSalesOnly((v) => !v)}
                 onTenPctToggle={() => setTenPctOnly((v) => !v)}
                 onInsiderClick={(insider) => {
-                  setModalInsider(insider);
+                  setModalInsiderCik(insider.insider_cik);
                   setModalOpen(true);
                 }}
               />

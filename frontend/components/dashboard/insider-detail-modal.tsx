@@ -5,7 +5,6 @@ import { useQuery } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import {
-  BarChart,
   Bar,
   XAxis,
   YAxis,
@@ -15,8 +14,6 @@ import {
   ResponsiveContainer,
   Line,
   ComposedChart,
-  Cell,
-  ReferenceLine,
 } from "recharts";
 import type { InsiderSummaryRow, Transaction, StockPricePoint } from "@/lib/api";
 import { fetchTransactions, fetchStockPrices } from "@/lib/api";
@@ -48,6 +45,9 @@ type WaterfallPoint = {
   value: number;
   base: number;
   fill: string;
+  isTotal?: boolean;
+  displayValue: number;
+  sign: "positive" | "negative" | "total";
 };
 
 function buildSalesData(
@@ -95,12 +95,17 @@ function buildSalesData(
     const coreUsd = data.coreSold;
     const nonCoreUsd = coreSalesOnly ? 0 : data.nonCoreSold;
     const start = monthStartShares.get(month);
+    const monthTxns = allSorted.filter((t) => t.transaction_date.startsWith(month));
+    const totalAcquiredShares = monthTxns
+      .filter((t) => (t.acq_disp ?? "").toUpperCase() === "A")
+      .reduce((sum, t) => sum + (t.shares ?? 0), 0);
     const totalSoldShares = sorted
       .filter((t) => t.transaction_date.startsWith(month))
       .filter((t) => !coreSalesOnly || classifyTransaction(t) === "core")
       .reduce((sum, t) => sum + (t.shares ?? 0), 0);
     const totalSoldUsd = coreUsd + nonCoreUsd;
-    const pct = start && start > 0 && totalSoldUsd > 0 ? totalSoldShares / start : null;
+    const available = (start ?? 0) + totalAcquiredShares;
+    const pct = available > 0 && totalSoldUsd > 0 ? totalSoldShares / available : null;
     points.push({
       period: month,
       coreSalesUsd: coreUsd,
@@ -114,32 +119,218 @@ function buildSalesData(
 
 function buildWaterfallData(insider: InsiderSummaryRow): WaterfallPoint[] {
   const bop = insider.bop_shares ?? 0;
-  const avgPrice = insider.avg_cost_basis_buys ?? insider.avg_cost_basis_core_sales ?? 0;
-  const bopVal = bop * avgPrice;
   const eop = insider.eop_shares ?? 0;
-  const eopVal = eop * avgPrice;
+  const coreBuys = insider.buys_core_shares ?? 0;
+  const nonCoreBuys = insider.buys_non_core_shares ?? 0;
+  const coreSales = insider.sales_core_shares;
+  const nonCoreSales = insider.sales_non_core_shares ?? 0;
 
-  const purchases = insider.buys_usd;
-  const coreSales = insider.sales_core_usd;
-  const nonCoreSales = insider.sales_non_core_usd;
+  const classifiedNet = bop + coreBuys + nonCoreBuys - coreSales - nonCoreSales;
+  const gap = eop - classifiedNet;
 
-  let running = bopVal;
+  let running = bop;
   const points: WaterfallPoint[] = [
-    { label: "BoP Value", value: bopVal, base: 0, fill: "hsl(217, 91%, 60%)" },
+    { label: "BoP Shares", value: bop, base: 0, fill: "hsl(217, 91%, 60%)", isTotal: true, displayValue: bop, sign: "total" },
   ];
 
-  points.push({ label: "Purchases", value: purchases, base: running, fill: "hsl(142, 76%, 36%)" });
-  running += purchases;
+  if (coreBuys > 0) {
+    points.push({ label: "Core Buys", value: coreBuys, base: running, fill: "hsl(142, 76%, 36%)", displayValue: coreBuys, sign: "positive" });
+    running += coreBuys;
+  }
 
-  points.push({ label: "Core Sales", value: coreSales, base: running - coreSales, fill: "hsl(0, 84%, 60%)" });
-  running -= coreSales;
+  if (nonCoreBuys > 0) {
+    points.push({ label: "Non-Core Buys", value: nonCoreBuys, base: running, fill: "hsl(152, 60%, 52%)", displayValue: nonCoreBuys, sign: "positive" });
+    running += nonCoreBuys;
+  }
 
-  points.push({ label: "Non-Core Sales", value: nonCoreSales, base: running - nonCoreSales, fill: "hsl(25, 95%, 53%)" });
-  running -= nonCoreSales;
+  if (coreSales > 0) {
+    points.push({ label: "Core Sales", value: coreSales, base: running - coreSales, fill: "hsl(0, 84%, 60%)", displayValue: -coreSales, sign: "negative" });
+    running -= coreSales;
+  }
 
-  points.push({ label: "EoP Value", value: eopVal, base: 0, fill: "hsl(217, 91%, 60%)" });
+  if (nonCoreSales > 0) {
+    points.push({ label: "Non-Core Sales", value: nonCoreSales, base: running - nonCoreSales, fill: "hsl(25, 95%, 53%)", displayValue: -nonCoreSales, sign: "negative" });
+    running -= nonCoreSales;
+  }
+
+  if (Math.abs(gap) > 0.5) {
+    if (gap > 0) {
+      points.push({ label: "Other/Adj.", value: gap, base: running, fill: "hsl(var(--muted-foreground))", displayValue: gap, sign: "positive" });
+    } else {
+      points.push({ label: "Other/Adj.", value: -gap, base: running + gap, fill: "hsl(var(--muted-foreground))", displayValue: gap, sign: "negative" });
+    }
+    running += gap;
+  }
+
+  points.push({ label: "EoP Shares", value: eop, base: 0, fill: "hsl(217, 91%, 60%)", isTotal: true, displayValue: eop, sign: "total" });
 
   return points;
+}
+
+function WaterfallChart({ data }: { data: WaterfallPoint[] }) {
+  if (!data.length) return <div className="flex h-[400px] items-center justify-center text-muted-foreground">No data.</div>;
+
+  const margin = { top: 28, right: 16, bottom: 32, left: 60 };
+  const [size, setSize] = useState({ w: 600, h: 400 });
+  const ref = useMemo(() => {
+    let ro: ResizeObserver | null = null;
+    return (el: HTMLDivElement | null) => {
+      ro?.disconnect();
+      if (!el) return;
+      ro = new ResizeObserver(([e]) => {
+        const { width, height } = e.contentRect;
+        if (width > 0 && height > 0) setSize({ w: width, h: height });
+      });
+      ro.observe(el);
+      const { width, height } = el.getBoundingClientRect();
+      if (width > 0 && height > 0) setSize({ w: width, h: height });
+    };
+  }, []);
+
+  const chartW = size.w - margin.left - margin.right;
+  const chartH = size.h - margin.top - margin.bottom;
+
+  const tops = data.map((d) => d.base + d.value);
+  const bottoms = data.map((d) => d.base);
+  const yMax = Math.max(...tops) * 1.08;
+  const yMin = Math.min(0, ...bottoms);
+
+  const scaleY = (v: number) => margin.top + chartH * (1 - (v - yMin) / (yMax - yMin));
+  const barW = chartW / data.length;
+  const barPad = barW * 0.2;
+
+  const ticks = useMemo(() => {
+    const range = yMax - yMin;
+    const rawStep = range / 5;
+    const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const step = Math.ceil(rawStep / mag) * mag;
+    const result: number[] = [];
+    for (let v = Math.ceil(yMin / step) * step; v <= yMax; v += step) result.push(v);
+    return result;
+  }, [yMin, yMax]);
+
+  const [hover, setHover] = useState<number | null>(null);
+
+  return (
+    <div ref={ref} className="h-[400px] w-full">
+      <svg width={size.w} height={size.h} className="select-none">
+        {ticks.map((t) => (
+          <g key={t}>
+            <line
+              x1={margin.left}
+              x2={size.w - margin.right}
+              y1={scaleY(t)}
+              y2={scaleY(t)}
+              stroke="hsl(var(--muted))"
+              strokeDasharray="3 3"
+            />
+            <text
+              x={margin.left - 8}
+              y={scaleY(t)}
+              textAnchor="end"
+              dominantBaseline="middle"
+              fontSize={11}
+              fill="hsl(var(--muted-foreground))"
+            >
+              {smartSharesFmt(t)}
+            </text>
+          </g>
+        ))}
+
+        {data.map((d, i) => {
+          const x = margin.left + i * barW + barPad;
+          const w = barW - barPad * 2;
+          const top = scaleY(d.base + d.value);
+          const bot = scaleY(d.base);
+          const h = Math.max(Math.abs(bot - top), 1);
+          const barY = Math.min(top, bot);
+
+          const prevTop = i > 0 ? scaleY(data[i - 1].base + data[i - 1].value) : null;
+          const connY = d.sign === "positive" ? barY + h : barY;
+
+          return (
+            <g
+              key={d.label}
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover(null)}
+            >
+              {i > 0 && !d.isTotal && prevTop != null && (
+                <line
+                  x1={margin.left + (i - 1) * barW + barW - barPad}
+                  x2={x}
+                  y1={connY}
+                  y2={connY}
+                  stroke="hsl(var(--muted-foreground))"
+                  strokeDasharray="4 2"
+                  strokeWidth={1}
+                  opacity={0.5}
+                />
+              )}
+              <rect x={x} y={barY} width={w} height={h} fill={d.fill} rx={3} ry={3} />
+              <text
+                x={x + w / 2}
+                y={barY - 6}
+                textAnchor="middle"
+                fontSize={10}
+                fill="hsl(var(--muted-foreground))"
+              >
+                {d.sign !== "total" && (d.sign === "positive" ? "+" : "")}
+                {smartSharesFmt(d.displayValue)}
+              </text>
+              <text
+                x={margin.left + i * barW + barW / 2}
+                y={size.h - margin.bottom + 16}
+                textAnchor="middle"
+                fontSize={11}
+                fill="hsl(var(--muted-foreground))"
+              >
+                {d.label}
+              </text>
+              {hover === i && (
+                <g>
+                  <rect
+                    x={x + w / 2 - 60}
+                    y={barY - 40}
+                    width={120}
+                    height={28}
+                    rx={4}
+                    fill="hsl(var(--card))"
+                    stroke="hsl(var(--border))"
+                  />
+                  <text
+                    x={x + w / 2}
+                    y={barY - 22}
+                    textAnchor="middle"
+                    fontSize={11}
+                    fill="hsl(var(--foreground))"
+                  >
+                    {d.sign === "positive" ? "+" : d.sign === "negative" ? "" : ""}
+                    {formatNumber(d.displayValue)} shares
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function smartAxisFmt(v: number, prefix = "$"): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return `${prefix}${(v / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${prefix}${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${prefix}${(v / 1_000).toFixed(0)}k`;
+  return `${prefix}${v}`;
+}
+
+function smartSharesFmt(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(0)}k`;
+  return String(v);
 }
 
 export function InsiderDetailModal({
@@ -256,7 +447,7 @@ export function InsiderDetailModal({
                     <YAxis
                       yAxisId="left"
                       tick={{ fontSize: 11 }}
-                      tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                      tickFormatter={(v) => smartAxisFmt(v)}
                     />
                     <YAxis
                       yAxisId="right"
@@ -321,29 +512,7 @@ export function InsiderDetailModal({
           )}
 
           {view === "waterfall" && (
-            <div className="h-[400px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={waterfallData} margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip
-                    formatter={(value: number, name: string) => {
-                      if (name === "base") return [null, null];
-                      return [formatCurrency(value), "Value"];
-                    }}
-                    labelFormatter={(label) => String(label)}
-                  />
-                  <Bar dataKey="base" stackId="waterfall" fill="transparent" />
-                  <Bar dataKey="value" stackId="waterfall" radius={[2, 2, 0, 0]}>
-                    {waterfallData.map((entry, i) => (
-                      <Cell key={i} fill={entry.fill} />
-                    ))}
-                  </Bar>
-                  <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            <WaterfallChart data={waterfallData} />
           )}
 
           <div className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
