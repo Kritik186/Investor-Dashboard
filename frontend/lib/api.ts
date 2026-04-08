@@ -52,6 +52,7 @@ export type Transaction = {
   price: number | null;
   value_usd: number | null;
   shares_owned_following: number | null;
+  is_derivative: boolean | null;
   xml_url: string | null;
 };
 export type Kpis = {

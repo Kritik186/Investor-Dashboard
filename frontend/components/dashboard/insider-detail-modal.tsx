@@ -74,8 +74,9 @@ function buildSalesData(
   }
 
   const allSorted = [...transactions].sort((a, b) => a.transaction_date.localeCompare(b.transaction_date));
+  const nonDerivSorted = allSorted.filter((t) => !t.is_derivative);
   const monthStartShares = new Map<string, number>();
-  for (const t of allSorted) {
+  for (const t of nonDerivSorted) {
     const month = t.transaction_date.slice(0, 7);
     if (!monthStartShares.has(month) && t.shares_owned_following != null) {
       const shares = t.shares ?? 0;

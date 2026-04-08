@@ -65,6 +65,9 @@ _MIGRATE_TRANSACTION_COLUMNS = [
     ("transactions", "classification_reasoning", "TEXT"),
     ("transactions", "plan_adoption_date", "VARCHAR(12)"),
     ("transactions", "is_margin_call_collateral", None),
+    ("transactions", "is_derivative", None),
+    ("transactions", "ownership_type", "VARCHAR(2)"),
+    ("transactions", "ownership_nature", "VARCHAR(200)"),
 ]
 _MIGRATE_FILING_COLUMNS = [("filings", "is_10b5_1", None)]
 
@@ -302,12 +305,15 @@ def _do_sync(ticker: str, lookback_days: int = 365, max_forms: int = 500) -> dic
                         price=t.get("price"),
                         value_usd=t.get("value_usd"),
                         shares_owned_following=t.get("shares_owned_following"),
+                        ownership_type=t.get("ownership_type"),
+                        ownership_nature=t.get("ownership_nature"),
                         is_10b5_1=t.get("is_10b5_1"),
                         plan_adoption_date=t.get("plan_adoption_date"),
                         is_margin_call_collateral=t.get("is_margin_call_collateral"),
                         is_rsu_vest_related=t.get("is_rsu_vest_related"),
                         is_tax_withholding=t.get("is_tax_withholding"),
                         is_gift=t.get("is_gift"),
+                        is_derivative=t.get("is_derivative", False),
                         classification_confidence=t.get("classification_confidence"),
                         classification_reasoning=t.get("classification_reasoning"),
                         is_ten_percent_owner=t.get("is_ten_percent_owner"),

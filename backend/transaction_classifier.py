@@ -179,7 +179,9 @@ def classify_transaction(
         is_tax_withholding = True
         reasons.append("footnote indicates tax withholding/surrender")
 
-    # --- 4. RSU: derivative table + derivativeSecurityTitle contains "Restricted" + transactionCode M + exercisePrice 0 ---
+    # --- 4. RSU vest detection ---
+    # Primary: derivative row with title containing "Restricted", code M, exercise price 0
+    # Fallback: any row with code M and price 0 (Table I after derivative exercise)
     is_rsu_vest_related = False
     is_derivative = txn.get("is_derivative") is True
     derivative_title = (txn.get("derivative_security_title") or "").strip()
@@ -188,6 +190,11 @@ def classify_transaction(
         if code == "M" and (exercise_price is None or exercise_price == 0):
             is_rsu_vest_related = True
             reasons.append("derivative table; security title contains Restricted; transactionCode=M; exercisePrice=0")
+    elif not is_derivative and code == "M":
+        txn_price = txn.get("price")
+        if txn_price is None or txn_price == 0:
+            is_rsu_vest_related = True
+            reasons.append("transactionCode=M; price=$0 (derivative exercise / RSU vest)")
 
     # Confidence
     if reasons:

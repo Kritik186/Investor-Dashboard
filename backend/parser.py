@@ -187,6 +187,14 @@ def _parse_form_level_10b5_1(root: ET.Element) -> Optional[bool]:
     return None
 
 
+def _parse_ownership_nature(el: ET.Element) -> tuple[str, Optional[str]]:
+    """Extract (ownership_type, ownership_nature_desc) from ownershipNature child."""
+    otype = _find_text(el, "ownershipNature/directOrIndirectOwnership/value")
+    otype = (otype or "D").upper()[:1]
+    nature = _find_text(el, "ownershipNature/natureOfOwnership/value")
+    return otype, nature or None
+
+
 def _parse_non_derivative_transactions(root: ET.Element, footnote_map: Optional[dict[str, str]] = None) -> list[dict]:
     """
     Parse nonDerivativeTable/nonDerivativeTransaction.
@@ -201,7 +209,6 @@ def _parse_non_derivative_transactions(root: ET.Element, footnote_map: Optional[
         for txn in table.findall("nonDerivativeTransaction"):
             tdate = _find_text(txn, "transactionDate/value")
             tcode = _find_text(txn, "transactionCoding/transactionCode")
-            # Proven path first: transactionAcquiredDisposedCode (reference); fallbacks: acquisitionDispositionCode, transactionFormType
             acq_raw = _find_text(
                 txn,
                 "transactionAmounts/transactionAcquiredDisposedCode/value",
@@ -211,7 +218,6 @@ def _parse_non_derivative_transactions(root: ET.Element, footnote_map: Optional[
             acq_disp = (acq_raw or "").upper()[:1] if acq_raw else None
             if acq_disp and acq_disp not in ("A", "D"):
                 acq_disp = "A" if "A" in (acq_raw or "").upper() else "D" if "D" in (acq_raw or "").upper() else None
-            # Proven: transactionShares, transactionPricePerShare; fallbacks: sharesAcquiredDisposed, pricePerShare
             shares = _find_float(
                 txn,
                 "transactionAmounts/transactionShares/value",
@@ -228,6 +234,7 @@ def _parse_non_derivative_transactions(root: ET.Element, footnote_map: Optional[
             shares_following = _find_float(txn, "postTransactionAmounts/sharesOwnedFollowingTransaction/value")
             footnote_ids = _footnote_ids_for_element(txn)
             footnotes = [footnote_map[i] for i in footnote_ids if i in footnote_map]
+            otype, nature = _parse_ownership_nature(txn)
             out.append({
                 "transaction_date": tdate,
                 "transaction_code": tcode,
@@ -238,6 +245,29 @@ def _parse_non_derivative_transactions(root: ET.Element, footnote_map: Optional[
                 "shares_owned_following": shares_following,
                 "footnotes": footnotes,
                 "security_title": table_security_title,
+                "ownership_type": otype,
+                "ownership_nature": nature,
+            })
+    return out
+
+
+def _parse_non_derivative_holdings(root: ET.Element) -> list[dict]:
+    """
+    Parse nonDerivativeTable/nonDerivativeHolding (position-only rows, no transaction).
+    These rows report sharesOwnedFollowing for indirect ownership entities (trusts, LLCs)
+    that had no activity in the filing period but still contribute to total holdings.
+    """
+    out: list[dict] = []
+    for table in root.findall(".//nonDerivativeTable"):
+        for hold in table.findall("nonDerivativeHolding"):
+            shares_following = _find_float(hold, "postTransactionAmounts/sharesOwnedFollowingTransaction/value")
+            if shares_following is None:
+                continue
+            otype, nature = _parse_ownership_nature(hold)
+            out.append({
+                "shares_owned_following": shares_following,
+                "ownership_type": otype,
+                "ownership_nature": nature,
             })
     return out
 
@@ -408,22 +438,47 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
         el.tag = _strip_ns(el.tag)
     footnote_map = _collect_footnotes(root)
     ownerships = _parse_ownership_roots(root)
-    txns = _parse_non_derivative_transactions(root, footnote_map)
-    for t in txns:
+
+    nd_txns = _parse_non_derivative_transactions(root, footnote_map)
+    for t in nd_txns:
         t["is_derivative"] = False
         t["derivative_security_title"] = ""
         t["exercise_price"] = t.get("price")
-    derivative_txns = _parse_derivative_transactions(root, footnote_map)
-    txns = txns + derivative_txns
+
+    nd_holdings = _parse_non_derivative_holdings(root)
+
+    # Compute filing-level total shares_owned_following by aggregating across
+    # all ownership buckets (direct + each indirect trust/LLC/entity).
+    # Each bucket is identified by (ownership_type, ownership_nature).
+    # We take the latest reported position per bucket from both transaction rows
+    # and holding-only rows, then sum all buckets for the true total.
+    bucket_positions: dict[tuple[str, Optional[str]], float] = {}
+    for row in nd_txns + nd_holdings:
+        sf = row.get("shares_owned_following")
+        if sf is None:
+            continue
+        bucket_key = (row.get("ownership_type", "D"), row.get("ownership_nature"))
+        bucket_positions[bucket_key] = float(sf)
+
+    total_shares_following: Optional[float] = None
+    if bucket_positions:
+        total_shares_following = sum(bucket_positions.values())
+
+    if total_shares_following is not None:
+        for t in nd_txns:
+            t["shares_owned_following"] = total_shares_following
+
+    deriv_txns = _parse_derivative_transactions(root, footnote_map)
+
     if not ownerships:
         ownerships = [{"insider_name": "", "insider_cik": "", "is_director": False, "is_officer": False, "is_ten_percent_owner": False, "officer_title": None, "security_title": None}]
     form_aff10b5_one = _parse_form_level_10b5_1(root)
     full_filing_footnotes = " ".join(footnote_map.values()) if footnote_map else ""
-    meta = ownerships[0]
-    # Classify each transaction (same-date peers for RSU vest pattern)
-    for i, t in enumerate(txns):
+
+    all_txns = nd_txns + deriv_txns
+    for i, t in enumerate(all_txns):
         tdate = t.get("transaction_date")
-        same_date = [t2 for j, t2 in enumerate(txns) if j != i and t2.get("transaction_date") == tdate]
+        same_date = [t2 for j, t2 in enumerate(all_txns) if j != i and t2.get("transaction_date") == tdate]
         classification = classify_transaction(
             t, same_date_txns=same_date, form_aff10b5_one=form_aff10b5_one, full_filing_footnotes=full_filing_footnotes
         )
@@ -435,8 +490,54 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
         t["is_rsu_vest_related"] = classification.get("is_rsu_vest_related", False)
         t["classification_confidence"] = classification.get("classification_confidence", "low")
         t["classification_reasoning"] = classification.get("reasoning", "")
+
+    # Match derivative rows to their Table I counterparts and enrich.
+    # A derivative exercise (e.g. RSU vest, code M) appears in both tables on the
+    # same date with the same code and similar share count.  We transfer the
+    # derivative metadata (title, exercise price, footnotes, classification flags)
+    # onto the Table I row so it carries the full context.
+    used_deriv: set[int] = set()
+    for nd in nd_txns:
+        nd_date = nd.get("transaction_date")
+        nd_code = (nd.get("transaction_code") or "").upper()
+        nd_shares = nd.get("shares")
+        best: Optional[int] = None
+        for di, dt in enumerate(deriv_txns):
+            if di in used_deriv:
+                continue
+            if dt.get("transaction_date") != nd_date:
+                continue
+            if (dt.get("transaction_code") or "").upper() != nd_code:
+                continue
+            dt_shares = dt.get("shares")
+            if nd_shares is not None and dt_shares is not None and abs(nd_shares - dt_shares) > 1:
+                continue
+            best = di
+            break
+        if best is not None:
+            used_deriv.add(best)
+            matched = deriv_txns[best]
+            nd["derivative_security_title"] = matched.get("derivative_security_title") or ""
+            nd["exercise_price"] = matched.get("exercise_price")
+            deriv_footnotes = matched.get("footnotes") or []
+            existing = nd.get("footnotes") or []
+            nd["footnotes"] = existing + [f for f in deriv_footnotes if f not in existing]
+            for flag in ("is_10b5_1", "is_rsu_vest_related", "is_tax_withholding",
+                         "is_gift", "is_margin_call_collateral"):
+                if matched.get(flag):
+                    nd[flag] = True
+            if matched.get("plan_adoption_date") and not nd.get("plan_adoption_date"):
+                nd["plan_adoption_date"] = matched["plan_adoption_date"]
+            if matched.get("classification_reasoning"):
+                prev = nd.get("classification_reasoning") or ""
+                extra = matched["classification_reasoning"]
+                if extra not in prev:
+                    nd["classification_reasoning"] = f"{prev}; {extra}".strip("; ") if prev else extra
+
+    # Only output Table I (non-derivative) rows.
+    meta = ownerships[0]
     result = []
-    for t in txns:
+    for t in nd_txns:
         result.append({
             "accession": accession,
             "company_cik": company_cik,
@@ -454,12 +555,15 @@ def parse_form4_xml(xml_text: str, company_cik: str, accession: str, xml_url: st
             "price": t.get("price"),
             "value_usd": t.get("value_usd"),
             "shares_owned_following": t.get("shares_owned_following"),
+            "ownership_type": t.get("ownership_type", "D"),
+            "ownership_nature": t.get("ownership_nature"),
             "is_10b5_1": t.get("is_10b5_1"),
             "plan_adoption_date": t.get("plan_adoption_date"),
             "is_margin_call_collateral": t.get("is_margin_call_collateral"),
             "is_gift": t.get("is_gift"),
             "is_tax_withholding": t.get("is_tax_withholding"),
             "is_rsu_vest_related": t.get("is_rsu_vest_related"),
+            "is_derivative": False,
             "classification_confidence": t.get("classification_confidence"),
             "classification_reasoning": t.get("classification_reasoning"),
             "xml_url": xml_url,

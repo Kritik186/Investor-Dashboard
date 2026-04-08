@@ -49,12 +49,15 @@ class Transaction(SQLModel, table=True):
     price: Optional[float] = None
     value_usd: Optional[float] = None
     shares_owned_following: Optional[float] = None
+    ownership_type: Optional[str] = None  # "D" (direct) or "I" (indirect)
+    ownership_nature: Optional[str] = None  # e.g. "By Trust", "By LLC" (when indirect)
     is_10b5_1: Optional[bool] = None  # Per-transaction: from footnote 10b5-1
     plan_adoption_date: Optional[str] = None  # 10b5-1 plan adoption date (ISO YYYY-MM-DD) from footnote
     is_margin_call_collateral: Optional[bool] = None  # Sale due to margin call/collateral from footnote
     is_rsu_vest_related: Optional[bool] = None
     is_tax_withholding: Optional[bool] = None
     is_gift: Optional[bool] = None
+    is_derivative: Optional[bool] = None  # True = Table II (derivative/options/RSUs not yet converted)
     classification_confidence: Optional[str] = None  # high | medium | low
     classification_reasoning: Optional[str] = None
     xml_url: Optional[str] = None

@@ -21,6 +21,8 @@ def top_15_insiders(
     cutoff = (date.today() - timedelta(days=lookback_days)) if lookback_days else None
     rows = []
     for t in transactions:
+        if t.get("is_derivative"):
+            continue
         td = _parse_d(t.get("transaction_date"))
         if not td:
             continue
@@ -60,6 +62,8 @@ def holdings_over_time(
     cutoff = (date.today() - timedelta(days=lookback_days)) if lookback_days else None
     out = []
     for t in transactions:
+        if t.get("is_derivative"):
+            continue
         if t.get("insider_cik") not in top_ciks:
             continue
         td = t.get("transaction_date")
@@ -195,7 +199,7 @@ def aggregates_monthly_quarterly(
                 except (TypeError, ValueError):
                     pass
             acq = (t.get("acq_disp") or "").upper()
-            following = t.get("shares_owned_following")
+            following = t.get("shares_owned_following") if not t.get("is_derivative") else None
             t_id = t.get("id")
             is_10b5 = t.get("is_10b5_1")
             tcode = (t.get("transaction_code") or "").strip().upper()
@@ -528,16 +532,21 @@ def insider_summary(
         if not txns:
             continue
 
-        first = txns[0]
-        following_first = first.get("shares_owned_following")
-        sh_first = float(first.get("shares") or 0)
-        acq_first = (first.get("acq_disp") or "").upper()
-        bop_shares: float | None = None
-        if following_first is not None:
-            bop_shares = float(following_first) + sh_first if acq_first == "D" else float(following_first) - sh_first
+        non_deriv = [t for t in txns if not t.get("is_derivative")]
 
-        last = txns[-1]
-        eop_shares = float(last["shares_owned_following"]) if last.get("shares_owned_following") is not None else None
+        bop_shares: float | None = None
+        if non_deriv:
+            first_nd = non_deriv[0]
+            following_first = first_nd.get("shares_owned_following")
+            sh_first = float(first_nd.get("shares") or 0)
+            acq_first = (first_nd.get("acq_disp") or "").upper()
+            if following_first is not None:
+                bop_shares = float(following_first) + sh_first if acq_first == "D" else float(following_first) - sh_first
+
+        eop_shares: float | None = None
+        if non_deriv:
+            last_nd = non_deriv[-1]
+            eop_shares = float(last_nd["shares_owned_following"]) if last_nd.get("shares_owned_following") is not None else None
 
         officer_title = None
         is_director = False
