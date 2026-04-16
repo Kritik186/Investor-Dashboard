@@ -100,9 +100,11 @@ def ensure_tables():
     scheduler.start()
 
 
+_cors_origins = os.getenv("CORS_ORIGINS", "*")
+_origins_list = [o.strip() for o in _cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -857,7 +859,8 @@ def get_stock_prices(
             f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
             f"?period1={start_ts}&period2={end_ts}&interval=1mo&includeAdjustedClose=true"
         )
-        resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=15)
+        _verify = os.getenv("SEC_VERIFY_SSL", "1").strip().lower() not in ("0", "false", "no")
+        resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=_verify, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         result = data.get("chart", {}).get("result")

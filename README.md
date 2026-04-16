@@ -1,137 +1,183 @@
 # Insider Dashboard
 
-A web app to view SEC Form 4 insider trading data: resolve tickers, sync filings, and explore top insiders, holdings over time, activity, and transactions.
-
-## Data source (APIs, not scraping)
-
-All market data comes from **SEC EDGAR over HTTP APIs**—no HTML scraping.
-
-- **`backend/sec_client.py`**: HTTP client with rate limiting and retries.
-  - `get_json(url)` / `get_text(url)`: fetch JSON or text (XML) from SEC.
-  - `resolve_ticker_to_cik(ticker)`: uses `https://www.sec.gov/files/company_tickers.json`.
-  - `get_company_submissions(cik10)`: uses `https://data.sec.gov/submissions/CIK{cik}.json`.
-  - `get_filing_index_json()` / `get_filing_xml()`: fetch filing index and Form 4 XML from `https://www.sec.gov/Archives/edgar/...`.
-- **`backend/parser.py`**: uses `sec_client` to get filing index and XML, then parses Form 4 XML with Python’s `xml.etree.ElementTree`.
-- **`backend/main.py`**: calls `resolve_ticker_to_cik`, `get_company_submissions`, and `fetch_and_parse_form4` (from parser) during sync/refresh.
-
-## Stack
-
-- **Frontend**: Next.js (App Router), TypeScript, Tailwind, shadcn/ui, Recharts, TanStack Table, TanStack Query
-- **Backend**: FastAPI, requests, pandas, SQLModel, Postgres (Docker) / SQLite (dev)
-
-## Quick Start
-
-```bash
-# Clone or cd into project, then:
-docker compose up --build
-```
-
-- **Frontend**: http://localhost:3000  
-- **Backend API**: http://localhost:8000  
-- **API docs**: http://localhost:8000/docs  
-
-## Database (no manual setup for SQLite)
-
-**You do not need to create the database yourself.** The backend creates it automatically.
-
-### How it works
-
-1. When you start the backend (`uvicorn main:app ...`), the app loads `main.py`.
-2. It reads `DATABASE_URL` from the environment (default: `sqlite:///./insider.db`).
-3. It creates a SQLite **file** at `backend/insider.db` if it doesn’t exist (relative to where you run the command).
-4. It runs **`SQLModel.metadata.create_all(engine)`**, which creates all tables defined in `models.py`:
-   - `companies` (ticker, cik10, name, last_refresh)
-   - `insiders` (insider_cik, name)
-   - `filings` (accession, company_cik, filing_date, xml_url, is_amendment)
-   - `transactions` (id, accession, company_cik, insider_cik, …)
-
-### Steps (local dev with SQLite)
-
-1. **Go to the backend folder**
-   ```bash
-   cd backend
-   ```
-2. **Create and activate a virtual environment** (optional but recommended)
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate    # Windows
-   ```
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. **Start the backend** (no `.env` or `DATABASE_URL` needed for SQLite)
-   ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
-   ```
-5. On first run, **`insider.db`** is created in the `backend` folder and all tables are created. After that, use the dashboard **Refresh** (or `POST /api/sync`) to load data for a ticker.
-
-### Using Postgres instead
-
-1. **Create the database** (Postgres does not create it automatically). From `psql` or any PostgreSQL client:
-   ```sql
-   CREATE DATABASE "InsiderDB";
-   ```
-2. Set `DATABASE_URL` to use **InsiderDB** (e.g. in `backend/.env`):
-   ```bash
-   DATABASE_URL=postgresql://postgres:kritik@localhost:5432/InsiderDB
-   ```
-3. Start the backend from the `backend` folder. All tables (`companies`, `insiders`, `filings`, `transactions`) are created automatically on startup.
-
-### Viewing the database in DBeaver
-
-1. **Create the database first** (if you haven’t). In DBeaver, connect to your PostgreSQL server using the default `postgres` database (Host: `localhost`, Port: `5432`, User: `postgres`, Password: `kritik`). Then run:
-   ```sql
-   CREATE DATABASE "InsiderDB";
-   ```
-   If you get “already exists”, the database is there. Close and reopen the connection or refresh the server node.
-
-2. **Connect to InsiderDB**, not `postgres`. Create a **new connection** (or edit the existing one):
-   - **Host:** `localhost`
-   - **Port:** `5432`
-   - **Database:** `InsiderDB` (must match exactly; try `insiderdb` in lowercase if you created the DB without quotes)
-   - **Username:** `postgres`
-   - **Password:** `kritik`
-   Then **Test connection** and **Finish**.
-
-3. **Expand the connection:** `InsiderDB` → **Schemas** → **public** → **Tables**. You should see `companies`, `insiders`, `filings`, `transactions`. If not, start the backend once so it can create the tables.
-
-4. **Data appears after sync.** Tables are created empty. Use the app’s **Refresh** for a ticker (or `POST /api/sync`) to load Form 4 data; then refresh the tables in DBeaver to see rows.
+A web application for analyzing SEC Form 4 insider trading data for US public companies. Search any ticker, sync filings directly from the SEC, and explore insider buying/selling activity through interactive charts and tables.
 
 ---
 
-## Environment Variables
+## Table of Contents
 
-| Variable | Description | Default (dev) |
-|----------|-------------|----------------|
-| `DATABASE_URL` | DB connection string | `sqlite:///./insider.db` |
-| `SEC_USER_AGENT` | User-Agent for SEC requests | `InsiderDashboard/1.0 (kritik.ajmani@bain.com)` |
-| `SEC_VERIFY_SSL` | Set to `0` or `false` to disable SSL verification for SEC requests (e.g. corporate proxy with custom CA). Use only in trusted environments. | `1` (verify enabled) |
-| `NEXT_PUBLIC_API_URL` | Backend base URL for frontend | `http://localhost:8000` |
+1. [Features](#features)
+2. [How It Works](#how-it-works)
+3. [Dashboard Walkthrough](#dashboard-walkthrough)
+4. [Quick Start](#quick-start)
+5. [Tech Stack](#tech-stack)
+6. [Project Structure](#project-structure)
+7. [Environment Variables](#environment-variables)
+8. [API Endpoints](#api-endpoints)
+9. [Data Model](#data-model)
+10. [Testing](#testing)
+11. [Deployment](#deployment)
 
-For Docker, backend uses Postgres; override `DATABASE_URL` in `docker-compose.yml` if needed.
+---
 
-### SSL certificate errors
+## Features
 
-If you see `[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate` when the backend calls the SEC (e.g. on sync or resolve), your network is likely using a corporate proxy or custom CA that Python’s trust store doesn’t include. Options:
+- **Ticker search**: Enter any US public company ticker to load its insider trading data from SEC EDGAR.
+- **Configurable lookback**: Preset ranges (30d, 60d, 90d, 180d, 1y, 3y) or a custom value in days, months, or years. All metrics and charts respect the selected period.
+- **KPI summary cards**: Total $ sold, total $ bought, shares bought, net shares, filing count, and last refresh timestamp.
+- **Insider summary table**: Top 15 insiders ranked by shareholding, with columns for name, title, BoP/EoP shares, buys, sales (total/core/non-core), cost basis, % of BoP sold, and net buyer/seller classification.
+- **Core vs. Non-Core classification**: Transactions are classified as Core (open-market buys/sales with no special flags) or Non-Core (10b5-1 plan sales, RSU vests, tax withholdings, gifts, margin calls).
+- **Drill-down modal**: Click any insider row to see:
+  - **Sales Over Time chart**: Stacked monthly bars (core vs. non-core sales in $), with a secondary axis for % holdings sold per month and an optional stock price overlay via Yahoo Finance.
+  - **Waterfall chart**: Visual bridge from Beginning of Period (BoP) shares through Core Buys, Non-Core Buys, Core Sales, Non-Core Sales, and Other/Adj. to End of Period (EoP) shares.
+- **Cluster detection**: Alerts when 3+ distinct insiders sell in the same month, listing their names.
+- **Shareholding change tab**: Monthly/quarterly aggregates showing shares and dollar values bought/sold per insider, with 10b5-1 plan adoption dates.
+- **Transactions tab**: Paginated, sortable table of every transaction with filters by transaction type. Each row links to the SEC filing XML.
+- **Toggles**: ">10% Owners Only" and "Core Sales Only" filters on the summary table.
+- **CSV/Excel export**: Download the insider summary table data.
+- **Transaction type filter**: Filter the dashboard by specific transaction types (open market sale, open market purchase, RSU vest, tax withholding, gift, 10b5-1).
+- **Auto-sync**: Default tickers (AMZN, RBLX, CVNA, META, CPNG, TTAN) are synced automatically every Sunday. Any ticker can also be refreshed manually.
+- **Direct + indirect ownership**: Aggregates shares held directly and through trusts/LLCs/entities for accurate position tracking.
 
-1. **Quick workaround (dev only)**: In the backend folder, set `SEC_VERIFY_SSL=0` in your environment or a `.env` file, then restart the server. This disables SSL verification for SEC requests only and is less secure—use only in a trusted environment.
-2. **Proper fix**: Install your organization’s root CA and point Python at it (e.g. set `REQUESTS_CA_BUNDLE` or `SSL_CERT_FILE` to a PEM file that includes your corporate CA).
+---
 
-## Local Development (without Docker)
+## How It Works
 
-### Backend
+```
+User (browser)
+    -> Frontend (Next.js, port 3000)
+        -> Backend API (FastAPI, port 8000)
+            -> Database (PostgreSQL or SQLite)
+            -> SEC EDGAR (HTTPS APIs) -- only for resolve + sync
+            -> Yahoo Finance (HTTPS) -- stock price overlay
+```
+
+1. **Search**: User enters a ticker. The backend resolves it to a company CIK via SEC EDGAR.
+2. **Sync**: User clicks Refresh. The backend fetches the company's Form 4 filings from the SEC, parses each filing's XML, classifies transactions, and stores everything in the database. Filings are cached by accession number so they are never re-downloaded.
+3. **View**: The dashboard reads from the local database. The SEC is only called during resolve and sync. All charts, tables, and metrics are computed from stored transaction data filtered by the selected lookback period.
+
+### Data sources
+
+All data comes from public APIs -- no HTML scraping.
+
+| Source | What | When called |
+|--------|------|-------------|
+| SEC EDGAR `company_tickers.json` | Ticker to CIK resolution | On search |
+| SEC EDGAR `submissions/CIK{cik}.json` | Company's recent filings list | On sync |
+| SEC EDGAR `Archives/edgar/data/...` | Form 4 XML filings | On sync (per filing) |
+| Yahoo Finance chart API | Monthly stock prices | When drill-down modal opens |
+
+### Transaction classification
+
+Each transaction is automatically classified using transaction codes, footnotes, and filing metadata:
+
+| Classification | How detected |
+|---------------|-------------|
+| **10b5-1 plan** | Form-level `aff10b5One` indicator + footnote keywords; applied to dispositions only |
+| **RSU vest** | Derivative table: `transactionCode=M` + `exercisePrice=0` + security title contains "Restricted"; or non-derivative with `code=M` and `price=$0` |
+| **Tax withholding** | `transactionCode=F` or footnote keywords ("tax", "withholding") |
+| **Gift** | `transactionCode=G` or footnote keywords ("gift", "bona fide") |
+| **Margin call** | Explicit footnote phrases ("margin call", "collateral") |
+| **Core** | Open-market transactions with none of the above flags |
+
+---
+
+## Dashboard Walkthrough
+
+### 1. Search and refresh
+
+At the top of the page, enter a ticker (e.g. `AMZN`) and click **Search**. The app resolves the ticker and loads cached data. Click **Refresh** to pull the latest Form 4 filings from the SEC.
+
+### 2. Lookback period
+
+Use the dropdown to select a time range: 30d, 60d, 90d, 180d, 1y, 3y, or Custom. For custom, enter a number and choose the unit (Days, Months, Years). All metrics, charts, and tables update to reflect this period.
+
+### 3. KPI cards
+
+Six summary cards across the top: Total $ Sold, Total $ Bought, Shares Bought, Net Shares, # Filings, and Last Refresh.
+
+### 4. Holdings tab (default)
+
+Contains the **Insider Summary Table** -- a sortable table of the top 15 insiders with:
+
+| Column | Meaning |
+|--------|---------|
+| Name / Title | Insider name and officer title |
+| BoP Shares | Shares held at the beginning of the lookback period |
+| EoP Shares | Shares held at the end of the lookback period (most recent transaction) |
+| % EoP (of Top 15) | This insider's EoP shares as a percentage of all top-15 insiders' total EoP |
+| Net Buyer/Seller | Based on core buys vs. core sales in $ |
+| Buys ($) / Buys (#) | Total acquisition value and share count |
+| Avg Cost Basis (Buys) | Average price per share for purchases |
+| Purchases as % of BoP | Shares bought / BoP shares |
+| Sales Total ($) | Total disposition value |
+| Sales Core ($) / Core (#) | Open-market sales with no special flags |
+| Avg Cost Core Sales ($) | Average price for core sales |
+| Sales as % of BoP | Total shares sold / BoP shares |
+| Non-Core ($) | 10b5-1, RSU, tax, gift, and margin call sales |
+| Non-Core % of Total | Non-core sales $ / total sales $ |
+
+**Toggles** above the table:
+- **>10% Owners Only**: Filter to insiders who are 10%+ beneficial owners.
+- **Core Sales Only**: Show only core (open-market) transactions in the summary.
+
+**Cluster detection**: If 3+ insiders sold in the same month, a banner appears listing the month and seller names.
+
+**Export**: Click the export button to download the table as CSV.
+
+### 5. Insider drill-down modal
+
+Click any row in the summary table to open a detail modal with two charts:
+
+**Sales Over Time** (stacked bar + line chart):
+- Left Y-axis: Monthly sales in $ (stacked bars for Core and Non-Core).
+- Right Y-axis: % Holdings Sold per month (line).
+- Stock price overlay (line) showing monthly close prices for months with sales activity.
+
+**Waterfall chart** (custom SVG):
+- Visual bridge: BoP Shares + Core Buys + Non-Core Buys - Core Sales - Non-Core Sales +/- Other/Adj. = EoP Shares.
+- Floating bars with connector lines; hover for tooltips.
+
+### 6. Shareholding Change tab
+
+Monthly or quarterly aggregates per insider showing shares bought, shares sold, dollar values, and shares owned following. Includes 10b5-1 plan adoption dates when available.
+
+### 7. Transactions tab
+
+Paginated table of every individual transaction within the lookback period. Columns include date, insider name, transaction code, shares, price, value, shares after, and flags (10b5-1, RSU, gift, etc.). Each row has a link to view the original SEC filing XML.
+
+Filter by transaction type using the dropdown above the table.
+
+---
+
+## Quick Start
+
+### Docker (recommended)
+
+```bash
+docker compose up --build
+```
+
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8000
+- **API docs (Swagger)**: http://localhost:8000/docs
+
+### Local development (without Docker)
+
+**Backend:**
 
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate   # Windows
+.venv\Scripts\activate       # Windows
+# source .venv/bin/activate  # macOS/Linux
 pip install -r requirements.txt
-# Uses SQLite if DATABASE_URL not set
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Frontend
+Uses SQLite by default (no database setup needed). A file `backend/insider.db` is created automatically.
+
+**Frontend:**
 
 ```bash
 cd frontend
@@ -139,19 +185,120 @@ npm install
 npm run dev
 ```
 
-Set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `frontend/.env.local` if needed.
+Open http://localhost:3000. Set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `frontend/.env.local` if needed.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, shadcn/ui |
+| Charts | Recharts (Sales Over Time), Custom SVG (Waterfall) |
+| Tables | TanStack Table (React Table) |
+| Data fetching | TanStack Query (React Query) |
+| Backend | FastAPI, Python 3.12, SQLModel (SQLAlchemy + Pydantic) |
+| Data processing | pandas |
+| HTTP clients | `requests` (SEC EDGAR), `httpx` (Yahoo Finance) |
+| Database | PostgreSQL 16 (production) or SQLite (local dev) |
+| Scheduling | APScheduler (weekly auto-sync) |
+
+---
+
+## Project Structure
+
+```
+Main Project/
+├── backend/
+│   ├── main.py                  # FastAPI app, routes, DB engine, migrations
+│   ├── models.py                # SQLModel tables (Company, Insider, Filing, Transaction)
+│   ├── parser.py                # Form 4 XML parsing, Table I/II handling, ownership aggregation
+│   ├── sec_client.py            # SEC EDGAR HTTP client (rate limiting, retries)
+│   ├── transforms.py            # Business logic (top 15, BoP/EoP, aggregates, insider summary)
+│   ├── transaction_classifier.py # Transaction classification (10b5-1, RSU, gift, tax, margin)
+│   ├── config.py                # Default tickers and labels
+│   ├── requirements.txt         # Python dependencies
+│   ├── runtime.txt              # Python version pin (3.12)
+│   ├── Dockerfile
+│   └── tests/
+├── frontend/
+│   ├── app/                     # Next.js App Router (page, layout)
+│   ├── components/
+│   │   ├── dashboard.tsx        # Main dashboard (search, KPIs, tabs, filters)
+│   │   └── dashboard/
+│   │       ├── insider-summary-table.tsx   # Top 15 insiders table
+│   │       ├── insider-detail-modal.tsx    # Drill-down modal (charts)
+│   │       ├── holdings-chart.tsx          # Holdings over time
+│   │       ├── activity-charts.tsx         # Monthly/quarterly activity
+│   │       ├── pct-sold-tab.tsx            # Shareholding change tab
+│   │       └── transactions-table.tsx      # Transactions table
+│   ├── lib/
+│   │   └── api.ts               # API client, types, fetch functions
+│   ├── package.json
+│   └── Dockerfile
+├── docker-compose.yml           # PostgreSQL + backend + frontend
+├── .env.example                 # Documented environment variables
+├── DEPLOYMENT.md                # Full deployment guide
+└── README.md                    # This file
+```
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `backend/.env` for local development.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes (prod) | `sqlite:///./insider.db` | Database connection string. Use `postgresql://user:pass@host:5432/dbname` for production. |
+| `SEC_USER_AGENT` | Yes | `InsiderDashboard/1.0 (...)` | User-Agent for SEC EDGAR requests. Must identify your app and include a contact email. |
+| `SEC_VERIFY_SSL` | No | `1` (enabled) | Set to `0` to disable SSL verification (corporate proxy). See [DEPLOYMENT.md](DEPLOYMENT.md). |
+| `CORS_ORIGINS` | No | `*` | Comma-separated allowed frontend origins. Set to your frontend URL in production. |
+| `NEXT_PUBLIC_API_URL` | Yes (prod) | `http://localhost:8000` | Backend API URL for the frontend (baked in at build time). |
+
+---
 
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/resolve?ticker=AAPL` | Resolve ticker to CIK and company name |
-| POST | `/api/sync` | Sync Form 4 data (body: ticker, lookback_days, max_forms) |
-| GET | `/api/{ticker}/top?lookback_days=` | Top 15 insiders by abs(value_usd) |
-| GET | `/api/{ticker}/holdings?lookback_days=` | Holdings over time for top 15 |
-| GET | `/api/{ticker}/aggregates?lookback_days=&period=month\|quarter` | Monthly/quarterly aggregates |
-| GET | `/api/{ticker}/transactions?lookback_days=&insider_cik=&limit=&offset=` | Paginated transactions |
+| POST | `/api/sync` | Sync Form 4 data (body: `{ticker, lookback_days, max_forms}`) |
 | POST | `/api/{ticker}/refresh` | Alias for sync |
+| GET | `/api/{ticker}/kpis?lookback_days=` | KPI summary (totals, net shares, filings count) |
+| GET | `/api/{ticker}/top?lookback_days=` | Top 15 insiders by shares held |
+| GET | `/api/{ticker}/holdings?lookback_days=` | Holdings over time for top 15 |
+| GET | `/api/{ticker}/aggregates?lookback_days=&period=month|quarter` | Monthly/quarterly aggregates |
+| GET | `/api/{ticker}/insider-summary?lookback_days=` | Insider summary table data (BoP, EoP, buys, sales, classification) |
+| GET | `/api/{ticker}/insider/{cik}/activity?lookback_days=&period=` | Per-insider activity time series |
+| GET | `/api/{ticker}/transactions?lookback_days=&insider_cik=&limit=&offset=` | Paginated transactions |
+| GET | `/api/{ticker}/stock-prices?lookback_days=` | Monthly stock prices (Yahoo Finance) |
+
+All lookback endpoints filter by transaction date within the last `lookback_days` days from today. Interactive API documentation is available at `/docs` (Swagger UI).
+
+---
+
+## Data Model
+
+### Database tables
+
+| Table | Key Fields | Purpose |
+|-------|-----------|---------|
+| `companies` | ticker (PK), cik10, name, last_refresh | One row per synced company |
+| `insiders` | insider_cik (PK), name | One row per distinct insider |
+| `filings` | accession (PK), company_cik, filing_date, xml_url | One row per Form 4 filing |
+| `transactions` | id (PK), accession, company_cik, insider_cik, transaction_date, shares, price, value_usd, shares_owned_following, ownership_type, is_10b5_1, is_rsu_vest_related, is_derivative, ... | One row per parsed transaction |
+
+Tables are created automatically on backend startup. New columns are added via inline migrations (no Alembic required).
+
+### How positions are tracked
+
+- **Direct + indirect ownership**: Each Form 4 filing reports shares held per ownership bucket (direct, each trust/LLC). The parser aggregates all buckets into a single `shares_owned_following` total per filing.
+- **BoP (Beginning of Period)**: Derived from the first non-derivative transaction in the lookback window by reversing the transaction's effect on `shares_owned_following`.
+- **EoP (End of Period)**: The `shares_owned_following` from the last non-derivative transaction in the lookback window.
+- **Derivative exclusion**: Table II (derivative) transactions are used for classification metadata (RSU detection, security titles) but their positions are excluded from share counts to avoid double-counting.
+
+---
 
 ## Testing
 
@@ -161,7 +308,22 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-## SEC Compliance
+---
 
-- All SEC requests send the configured `User-Agent` header.
-- Rate limiting uses small delays and retries with backoff; the `Host` header is not overridden.
+## Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions covering:
+
+- Database setup (PostgreSQL)
+- Backend and frontend deployment (local, Docker, cloud)
+- Docker Compose all-in-one setup
+- Corporate network / SSL configuration
+- Production hardening (CORS, HTTPS, secrets)
+- Cloud deployment guides for AWS, Azure, and GCP
+- Troubleshooting
+
+### SEC compliance
+
+- All SEC requests include a configurable `User-Agent` header identifying the app and a contact email.
+- Rate limiting uses delays between requests and retries with exponential backoff.
+- SSL verification is enabled by default; can be configured for corporate proxy environments.
